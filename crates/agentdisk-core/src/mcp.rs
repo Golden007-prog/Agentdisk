@@ -120,28 +120,49 @@ pub fn tools() -> Value {
     ])
 }
 
-fn projects_arg(args: &Value, cfg: &config::Config) -> Vec<PathBuf> {
-    match args.get("projects").and_then(Value::as_arr) {
-        Some(list) => list
+fn projects_arg(args: &Value, cfg: &config::Config) -> Result<Vec<PathBuf>, String> {
+    let expected = "'projects' must be a list of folder paths, for example [\"/home/me/code\"]";
+    match args.get("projects") {
+        None => Ok(cfg.projects.clone()),
+        Some(value) => value
+            .as_arr()
+            .ok_or(expected)?
             .iter()
-            .filter_map(|v| v.as_str().map(PathBuf::from))
+            .map(|v| {
+                v.as_str()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| expected.to_string())
+            })
             .collect(),
-        None => cfg.projects.clone(),
     }
+}
+
+fn days_arg(args: &Value, name: &str, default: u64) -> Result<u64, String> {
+    let Some(value) = args.get(name) else {
+        return Ok(default);
+    };
+    // as_u64 truncates fractions, so check that the number is whole first.
+    value
+        .as_f64()
+        .filter(|n| n.fract() == 0.0)
+        .and_then(|_| value.as_u64())
+        .ok_or_else(|| format!("'{name}' must be a whole number of days (0 or more)"))
 }
 
 /// Run one tool. `Err` = tool error shown to the model.
 pub fn call(name: &str, args: &Value) -> Result<String, String> {
     let cfg = config::load();
-    let scan_opts = |args: &Value| ScanOptions {
-        projects: projects_arg(args, &cfg),
-        adapter_dirs: cfg.adapters.clone(),
-        max_depth: cfg.max_depth,
-        ..ScanOptions::default()
+    let scan_opts = |args: &Value| -> Result<ScanOptions, String> {
+        Ok(ScanOptions {
+            projects: projects_arg(args, &cfg)?,
+            adapter_dirs: cfg.adapters.clone(),
+            max_depth: cfg.max_depth,
+            ..ScanOptions::default()
+        })
     };
     match name {
         "agentdisk_scan" => {
-            let r = scan::run(&scan_opts(args));
+            let r = scan::run(&scan_opts(args)?);
             Ok(if args.get("json").and_then(Value::as_bool) == Some(true) {
                 scan::to_json(&r).pretty()
             } else {
@@ -172,20 +193,14 @@ pub fn call(name: &str, args: &Value) -> Result<String, String> {
             explain::explain(std::path::Path::new(p)).map(|e| explain::render(&e))
         }
         "agentdisk_advise" => {
-            let r = scan::run(&scan_opts(args));
+            let r = scan::run(&scan_opts(args)?);
             Ok(advise::render(&advise::advise(&r)))
         }
         "agentdisk_plan" => {
             let opts = PlanOptions {
-                scan: scan_opts(args),
-                worktree_days: args
-                    .get("worktree_days")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(cfg.worktree_days),
-                build_days: args
-                    .get("build_days")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(cfg.build_days),
+                scan: scan_opts(args)?,
+                worktree_days: days_arg(args, "worktree_days", cfg.worktree_days)?,
+                build_days: days_arg(args, "build_days", cfg.build_days)?,
                 ..PlanOptions::default()
             };
             let (plan, _) = cleanup::plan_now(&opts);
@@ -324,6 +339,83 @@ pub fn serve() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_projects_rejects_wrong_types() {
+        let cfg = config::Config::default();
+        for value in [
+            Value::Null,
+            "demo".into(),
+            true.into(),
+            5u64.into(),
+            Value::obj(vec![]),
+            Value::Arr(vec!["demo".into(), 5u64.into()]),
+            Value::Arr(vec![Value::Null]),
+        ] {
+            let error = projects_arg(&Value::obj(vec![("projects", value)]), &cfg).unwrap_err();
+            assert_eq!(
+                error,
+                "'projects' must be a list of folder paths, for example [\"/home/me/code\"]"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_days_rejects_wrong_types() {
+        for name in ["worktree_days", "build_days"] {
+            for value in [
+                Value::Null,
+                "0".into(),
+                false.into(),
+                Value::Num(-1.0),
+                Value::Num(0.5),
+                Value::Arr(vec![]),
+                Value::obj(vec![]),
+            ] {
+                let error = days_arg(&Value::obj(vec![(name, value)]), name, 14).unwrap_err();
+                assert_eq!(
+                    error,
+                    format!("'{name}' must be a whole number of days (0 or more)")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mcp_optional_arguments_keep_defaults_and_valid_values() {
+        let cfg = config::Config {
+            projects: vec![PathBuf::from("configured")],
+            ..config::Config::default()
+        };
+        assert_eq!(
+            projects_arg(&Value::obj(vec![]), &cfg).unwrap(),
+            cfg.projects
+        );
+        assert_eq!(
+            projects_arg(&Value::obj(vec![("projects", Value::Arr(vec![]))]), &cfg).unwrap(),
+            Vec::<PathBuf>::new()
+        );
+        assert_eq!(
+            projects_arg(
+                &Value::obj(vec![(
+                    "projects",
+                    Value::Arr(vec!["demo".into(), "another".into()])
+                )]),
+                &cfg
+            )
+            .unwrap(),
+            vec![PathBuf::from("demo"), PathBuf::from("another")]
+        );
+        for name in ["worktree_days", "build_days"] {
+            assert_eq!(days_arg(&Value::obj(vec![]), name, 14).unwrap(), 14);
+            for days in [0, 7, 14] {
+                assert_eq!(
+                    days_arg(&Value::obj(vec![(name, Value::Num(days as f64))]), name, 14).unwrap(),
+                    days
+                );
+            }
+        }
+    }
 
     #[test]
     fn initialize_and_list() {
