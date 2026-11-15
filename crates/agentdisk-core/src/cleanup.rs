@@ -1148,6 +1148,7 @@ pub type PurgeList = (Vec<(String, JournalEntry)>, Vec<String>);
 /// and reported. A bad plan id is an error.
 pub fn purge_candidates(plan: Option<&str>, min_days: u64) -> Result<PurgeList, String> {
     let now = size::now_secs();
+    let min_age_secs = min_days.saturating_mul(86_400);
     let ids = match plan {
         Some(p) => {
             check_plan_id(p)?;
@@ -1159,7 +1160,7 @@ pub fn purge_candidates(plan: Option<&str>, min_days: u64) -> Result<PurgeList, 
     let mut refused = Vec::new();
     for id in ids {
         for e in read_journal(&id) {
-            if e.state == "quarantined" && now.saturating_sub(e.moved_at) >= min_days * 86_400 {
+            if e.state == "quarantined" && now.saturating_sub(e.moved_at) >= min_age_secs {
                 match check_in_quarantine(&id, &e) {
                     Ok(()) => out.push((id.clone(), e)),
                     Err(why) => refused.push(why),

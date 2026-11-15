@@ -205,6 +205,10 @@ fn plans_lists_saved_plans_newest_first() {
 
 /// Write a quarantine journal by hand: (original, quarantine) pairs.
 fn write_journal(dir: &Path, entries: &[(&Path, &Path)]) {
+    write_journal_at(dir, entries, 0);
+}
+
+fn write_journal_at(dir: &Path, entries: &[(&Path, &Path)], moved_at: u64) {
     use agentdisk_core::json::Value;
     let v: Vec<Value> = entries
         .iter()
@@ -214,13 +218,51 @@ fn write_journal(dir: &Path, entries: &[(&Path, &Path)]) {
                 ("quarantine", quarantine.to_str().unwrap().into()),
                 ("kind", "build-folder".into()),
                 ("bytes", 10u64.into()),
-                ("moved_at", 0u64.into()),
+                ("moved_at", moved_at.into()),
                 ("state", "quarantined".into()),
             ])
         })
         .collect();
     fs::create_dir_all(dir).unwrap();
     fs::write(dir.join("journal.json"), Value::Arr(v).pretty()).unwrap();
+}
+
+#[test]
+fn purge_huge_age_leaves_fresh_quarantine_entries_alone() {
+    let h = tmp("purge-huge-age");
+    let plan = h.join("agentdisk/quarantine/20990101-abcdef");
+    let inside = plan.join("000-node_modules");
+    fs::create_dir_all(&inside).unwrap();
+    fs::write(inside.join("keep.txt"), b"keep").unwrap();
+    write_journal_at(
+        &plan,
+        &[(&h.join("app/node_modules"), &inside)],
+        agentdisk_core::size::now_secs(),
+    );
+    let journal = fs::read(plan.join("journal.json")).unwrap();
+
+    for days in [7, 1 << 57, u64::MAX] {
+        for selected_plan in [false, true] {
+            let days = days.to_string();
+            let mut args = vec!["purge", "--older-than", &days, "--dry-run"];
+            if selected_plan {
+                args.extend(["--plan", "20990101-abcdef"]);
+            }
+            let (code, out, err) = run(&h, &args);
+            assert_eq!(code, 0, "{out}{err}");
+            assert_eq!(
+                out,
+                format!("Nothing in quarantine is older than {days} day(s).\n")
+            );
+            assert_eq!(err, "");
+        }
+    }
+    let (code, out, err) = run(&h, &["purge", "--older-than", "0", "--dry-run"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.starts_with("1 item(s), "), "{out}");
+    assert_eq!(fs::read(plan.join("journal.json")).unwrap(), journal);
+    assert_eq!(fs::read(inside.join("keep.txt")).unwrap(), b"keep");
+    fs::remove_dir_all(&h).unwrap();
 }
 
 #[test]
