@@ -32,11 +32,8 @@ pub fn run(min_free_gb: u64, max_worktrees: usize) -> Health {
     }
     let mut warnings = Vec::new();
     if let Some((free, _)) = disk {
-        if free < min_free_gb * 1024 * 1024 * 1024 {
-            warnings.push(format!(
-                "Low disk space: {} free. Run `agentdisk scan` to see what agents left behind.",
-                human(free)
-            ));
+        if let Some(warning) = low_space_warning(free, min_free_gb) {
+            warnings.push(warning);
         }
     }
     let total: usize = per_agent.iter().map(|x| x.1).sum();
@@ -51,6 +48,15 @@ pub fn run(min_free_gb: u64, max_worktrees: usize) -> Health {
         worktrees: per_agent,
         warnings,
     }
+}
+
+fn low_space_warning(free: u64, min_free_gb: u64) -> Option<String> {
+    (free < min_free_gb.saturating_mul(1024 * 1024 * 1024)).then(|| {
+        format!(
+            "Low disk space: {} free. Run `agentdisk scan` to see what agents left behind.",
+            human(free)
+        )
+    })
 }
 
 pub fn render(h: &Health) -> String {
@@ -91,4 +97,28 @@ pub fn to_json(h: &Health) -> Value {
                 .into(),
         ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn huge_free_space_thresholds_still_warn() {
+        for min_free_gb in [1 << 34, u64::MAX] {
+            assert_eq!(
+                low_space_warning(10 * 1024 * 1024 * 1024, min_free_gb),
+                Some("Low disk space: 10.00 GiB free. Run `agentdisk scan` to see what agents left behind.".into())
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_free_space_thresholds_keep_their_boundary() {
+        let gib = 1024 * 1024 * 1024;
+        assert!(low_space_warning(19 * gib, 20).is_some());
+        assert_eq!(low_space_warning(20 * gib, 20), None);
+        assert_eq!(low_space_warning(21 * gib, 20), None);
+        assert_eq!(low_space_warning(0, 0), None);
+    }
 }
