@@ -6,6 +6,8 @@
 - Adapter files are rejected when a path has a `platforms` value other than `windows`, `macos` or `linux`, or has `kind = "worktree"` without a `marker`. Before, such a path was silently never found, or its worktrees were shown as `git`.
 - New: `agentdisk plans [--json]` lists the saved cleanup plans, newest first, with what each would free and whether it is empty, not applied, applied, restored or purged. A plan file that cannot be read is listed as unreadable. Read-only. Thanks to @ariktadas144! (#31, #37)
 - `size` and `explain` with several folders: `--json` now prints one JSON array in the order given instead of one object per line, and a folder that cannot be read is reported (`{"path", "error"}` in JSON, stderr in text) without stopping the others. The exit code is 1 if any folder failed. One folder behaves as before. Thanks to @ariktadas144! (#30, #41)
+- `purge --older-than` and `check --min-free-gb` no longer overflow on huge numbers: a release build used to wrap `--older-than 144115188075855872` to 0 days and list items moved today for permanent deletion, and a debug build panicked. Both now saturate, so a huge age lists nothing and a huge free-space threshold always warns. Thanks to @ViktorBystrov72! (#45, #54)
+- MCP: `projects` that is not a list of strings, and `worktree_days` / `build_days` that are not whole numbers of 0 or more, are tool errors (`isError: true`) that name the argument, instead of being dropped for the defaults. Missing arguments still use the defaults. Thanks to @ViktorBystrov72! (#46, #55)
 
 ## 0.3.1
 
