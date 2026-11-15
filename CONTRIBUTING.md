@@ -17,6 +17,10 @@ Both run format, lint, tests, a release build and a smoke test.
 
 The project uses no external crates on purpose: one small, auditable binary.
 
+## Pull requests
+
+Keep each pull request to one change, and run the checks above before you push. Do not edit `CHANGELOG.md` in your pull request; the maintainer adds the entry, with credit to you, when it is merged. This keeps pull requests from conflicting with each other.
+
 ## Rules that must not change
 
 - Scanning never writes anything.
