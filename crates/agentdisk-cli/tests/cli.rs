@@ -381,6 +381,70 @@ fn adapters_and_check() {
 }
 
 #[test]
+fn mcp_invalid_arguments_are_tool_errors_before_planning() {
+    use agentdisk_core::json::{self, Value};
+    use std::io::Write;
+
+    let h = tmp("mcp-arguments");
+    let cases = [
+        ("agentdisk_scan", "projects", "demo".into()),
+        (
+            "agentdisk_advise",
+            "projects",
+            Value::Arr(vec!["demo".into(), 5u64.into()]),
+        ),
+        ("agentdisk_plan", "build_days", "0".into()),
+        ("agentdisk_plan", "worktree_days", Value::Num(0.5)),
+    ];
+    let requests = cases
+        .iter()
+        .enumerate()
+        .map(|(id, (tool, arg, value))| {
+            Value::obj(vec![
+                ("jsonrpc", "2.0".into()),
+                ("id", id.into()),
+                ("method", "tools/call".into()),
+                (
+                    "params",
+                    Value::obj(vec![
+                        ("name", (*tool).into()),
+                        ("arguments", Value::obj(vec![(arg, value.clone())])),
+                    ]),
+                ),
+            ])
+        })
+        .collect();
+    let mut child = bin(&h)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.as_mut().unwrap(), "{}", Value::Arr(requests)).unwrap();
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let response = json::parse(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+    let replies = response.as_arr().unwrap();
+    assert_eq!(replies.len(), cases.len());
+    for (reply, (_, name, _)) in replies.iter().zip(cases) {
+        let result = reply.get("result").unwrap();
+        assert_eq!(result.get("isError").unwrap().as_bool(), Some(true));
+        let text = result.get("content").unwrap().as_arr().unwrap()[0]
+            .get("text")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(text.contains(name), "{text}");
+    }
+    assert!(
+        !h.join("agentdisk").exists(),
+        "invalid calls must not save a plan"
+    );
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
 fn explain_command() {
     let h = tmp("explain");
     let web = h.join("web");
