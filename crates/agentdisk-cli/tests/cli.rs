@@ -41,6 +41,93 @@ fn run(home: &PathBuf, args: &[&str]) -> (i32, String, String) {
     )
 }
 
+fn read_one_line_then_close(mut command: Command) {
+    use std::io::{BufRead, BufReader};
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut first_line = String::new();
+    assert!(reader.read_line(&mut first_line).unwrap() > 0);
+    drop(reader);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn closed_stdout_stops_adapters_quietly() {
+    let h = tmp("broken-adapters");
+    let adapters = h.join("adapters");
+    fs::create_dir_all(&adapters).unwrap();
+    // More output than a pipe can hold ensures the writer is still active
+    // when the reader closes after its first line.
+    fs::write(
+        adapters.join("large.toml"),
+        format!(
+            "id = \"large\"\nname = \"{}\"\nvendor = \"fixture\"\n",
+            "x".repeat(1024 * 1024)
+        ),
+    )
+    .unwrap();
+    for json in [false, true] {
+        let mut command = bin(&h);
+        command.arg("adapters").arg("--adapters").arg(&adapters);
+        if json {
+            command.arg("--json");
+        }
+        read_one_line_then_close(command);
+    }
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn stdout_write_errors_other_than_a_closed_pipe_are_reported() {
+    let h = tmp("full-output");
+    let output = bin(&h)
+        .arg("--help")
+        .stdout(
+            fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap(),
+        )
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("error: "), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn closed_stdout_stops_repeated_folder_output_quietly() {
+    let h = tmp("broken-folders");
+    let folder = h.join("folder");
+    fs::create_dir_all(&folder).unwrap();
+    for name in ["size", "explain"] {
+        let mut command = bin(&h);
+        command.current_dir(&h).arg(name);
+        command.args(std::iter::repeat_n("folder", 1024));
+        read_one_line_then_close(command);
+    }
+    fs::remove_dir_all(&h).unwrap();
+}
+
 #[test]
 fn version_and_help() {
     let h = tmp("v");
