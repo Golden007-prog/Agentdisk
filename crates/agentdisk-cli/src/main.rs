@@ -114,6 +114,17 @@ fn parse(rest: &[String], valued: &[&str], switches: &[&str]) -> Result<Args, St
     Ok(a)
 }
 
+fn no_positionals(a: &Args, hint: Option<&str>) -> Result<(), String> {
+    if let Some(arg) = a.pos.first() {
+        let mut message = format!("unexpected argument '{arg}'");
+        if let Some(flag) = hint {
+            message.push_str(&format!(". Did you mean `{flag} {arg}`?"));
+        }
+        return Err(message);
+    }
+    Ok(())
+}
+
 fn scan_options(a: &Args, cfg: &config::Config) -> Result<ScanOptions, String> {
     let mut projects: Vec<PathBuf> = a.many("projects").into_iter().map(PathBuf::from).collect();
     if projects.is_empty() {
@@ -165,6 +176,7 @@ fn cmd_scan(rest: &[String]) -> Result<ExitCode, String> {
         println!("agentdisk scan [-p <dir>]... [--json] [--depth N] [--threads N] [--adapters <dir>] [--no-agents]\n\nRead-only report of agent data, worktrees and dependency/build folders.\nWithout -p it scans agent folders only (plus `projects` from config).");
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, Some("-p"))?;
     let cfg = config::load();
     print_warnings(&cfg);
     let r = scan::run(&scan_options(&a, &cfg)?);
@@ -293,6 +305,7 @@ fn cmd_advise(rest: &[String]) -> Result<ExitCode, String> {
         println!("agentdisk advise [-p <dir>]... [--json]\n\nSuggestions only; agentdisk never runs them.");
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, Some("-p"))?;
     let cfg = config::load();
     print_warnings(&cfg);
     let r = scan::run(&scan_options(&a, &cfg)?);
@@ -323,6 +336,7 @@ fn cmd_plan(rest: &[String]) -> Result<ExitCode, String> {
         println!("agentdisk plan [-p <dir>]... [--worktree-days N] [--build-days N]\n                [--no-worktrees] [--no-build] [--no-agent-caches] [--json]\n\nMakes and saves a cleanup plan. Moves nothing. A person applies it with\n`agentdisk apply <id>` in a terminal.");
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, Some("-p"))?;
     let cfg = config::load();
     print_warnings(&cfg);
     let opts = PlanOptions {
@@ -349,6 +363,7 @@ fn cmd_plans(rest: &[String]) -> Result<ExitCode, String> {
         println!("agentdisk plans [--json]\n\nRead-only. Lists the saved cleanup plans, newest first, with what each\nwould free and whether it was applied.");
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, None)?;
     let list = cleanup::list_plans();
     if a.has("json") {
         println!("{}", cleanup::plans_to_json(&list).pretty());
@@ -452,6 +467,7 @@ fn cmd_purge(rest: &[String]) -> Result<ExitCode, String> {
         println!("agentdisk purge [--older-than DAYS (default 7)] [--plan <id>] [--dry-run]\n\nDeletes quarantined items for good. Must be run by a person in a terminal.");
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, Some("--plan"))?;
     let days = a.num("older-than")?.unwrap_or(7);
     let (list, refused) = cleanup::purge_candidates(a.one("plan"), days)?;
     let status = |problems: bool| {
@@ -549,6 +565,7 @@ fn cmd_check(rest: &[String]) -> Result<ExitCode, String> {
         println!("agentdisk check [--min-free-gb 20] [--max-worktrees 20] [--json] [--quiet]\n\nFast. Prints a warning when space is low or agent worktrees pile up.\nAlways exits 0, so it is safe in hooks. --quiet prints only warnings.");
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, None)?;
     let h = check::run(
         a.num("min-free-gb")?.unwrap_or(20),
         a.num("max-worktrees")?.unwrap_or(20) as usize,
@@ -563,6 +580,7 @@ fn cmd_check(rest: &[String]) -> Result<ExitCode, String> {
 
 fn cmd_adapters(rest: &[String]) -> Result<ExitCode, String> {
     let a = parse(rest, &["adapters"], &["json"])?;
+    no_positionals(&a, None)?;
     let cfg = config::load();
     let mut dirs = cfg.adapters.clone();
     dirs.extend(a.many("adapters").into_iter().map(PathBuf::from));
@@ -644,6 +662,7 @@ fn cmd_adapters(rest: &[String]) -> Result<ExitCode, String> {
 
 fn cmd_config(rest: &[String]) -> Result<ExitCode, String> {
     let a = parse(rest, &[], &["init"])?;
+    no_positionals(&a, None)?;
     let path = config::path();
     if a.has("init") {
         if path.exists() {

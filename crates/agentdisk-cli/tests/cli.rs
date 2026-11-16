@@ -115,6 +115,63 @@ fn size_command() {
 }
 
 #[test]
+fn extra_arguments_are_refused_before_scanning_or_writing() {
+    let h = tmp("extra-arguments");
+    for command in ["scan", "advise", "plan"] {
+        let (code, out, err) = run(&h, &[command, "demo"]);
+        assert_eq!(code, 2, "{command}: {out}{err}");
+        assert_eq!(out, "");
+        assert_eq!(
+            err,
+            "error: unexpected argument 'demo'. Did you mean `-p demo`?\n"
+        );
+        assert!(
+            !h.join("agentdisk").exists(),
+            "invalid arguments must not save a plan"
+        );
+    }
+    for command in ["check", "plans", "adapters", "config"] {
+        let (code, out, err) = run(&h, &[command, "demo"]);
+        assert_eq!(code, 2, "{command}: {out}{err}");
+        assert_eq!(out, "");
+        assert_eq!(err, "error: unexpected argument 'demo'\n");
+    }
+    let (code, out, err) = run(&h, &["config", "--init", "demo"]);
+    assert_eq!(code, 2, "{out}{err}");
+    assert_eq!(out, "");
+    assert_eq!(err, "error: unexpected argument 'demo'\n");
+    assert!(
+        !h.join("agentdisk").exists(),
+        "invalid arguments must not write config"
+    );
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn extra_purge_argument_is_not_treated_as_an_all_plan_request() {
+    let h = tmp("extra-purge-argument");
+    let plan = h.join("agentdisk/quarantine/20990101-abcdef");
+    let inside = plan.join("000-node_modules");
+    fs::create_dir_all(&inside).unwrap();
+    fs::write(inside.join("keep.txt"), b"keep").unwrap();
+    write_journal(&plan, &[(&h.join("app/node_modules"), &inside)]);
+    let journal = fs::read(plan.join("journal.json")).unwrap();
+    let (code, out, err) = run(
+        &h,
+        &["purge", "20990101-999999", "--older-than", "0", "--dry-run"],
+    );
+    assert_eq!(code, 2, "{out}{err}");
+    assert_eq!(out, "");
+    assert_eq!(
+        err,
+        "error: unexpected argument '20990101-999999'. Did you mean `--plan 20990101-999999`?\n"
+    );
+    assert_eq!(fs::read(plan.join("journal.json")).unwrap(), journal);
+    assert_eq!(fs::read(inside.join("keep.txt")).unwrap(), b"keep");
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
 fn apply_and_purge_refuse_without_a_terminal() {
     let h = tmp("apply");
     let (code, _, _) = run(&h, &["plan"]);
