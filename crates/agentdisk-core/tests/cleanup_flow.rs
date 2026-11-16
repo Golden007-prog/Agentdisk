@@ -177,7 +177,9 @@ fn full_cleanup_flow() {
     // Apply again, then purge for good.
     let out2 = cleanup::apply(&loaded, false);
     assert_eq!(out2.moved.len(), out.moved.len(), "{:?}", out2.skipped);
-    let (candidates, refused) = cleanup::purge_candidates(Some(&loaded.id), 0).unwrap();
+    let (candidates, refused, quarantined) =
+        cleanup::purge_candidates(Some(&loaded.id), 0).unwrap();
+    assert_eq!(quarantined, candidates.len());
     assert!(refused.is_empty(), "{refused:?}");
     assert_eq!(candidates.len(), out2.moved.len());
     let (freed, problems) = cleanup::purge(&candidates);
