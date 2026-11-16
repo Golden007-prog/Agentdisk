@@ -1140,8 +1140,9 @@ pub fn restore(plan_id: &str) -> (Vec<JournalEntry>, Vec<String>) {
     (done, problems)
 }
 
-/// (entries `purge` may delete with their plan id, entries left out and why).
-pub type PurgeList = (Vec<(String, JournalEntry)>, Vec<String>);
+/// (entries `purge` may delete with their plan id, entries left out and why,
+/// total number of quarantined entries before filtering by age).
+pub type PurgeList = (Vec<(String, JournalEntry)>, Vec<String>, usize);
 
 /// Quarantined entries older than `min_days` (all plans, or one). Entries
 /// whose quarantine path is not inside their plan's quarantine are left out
@@ -1158,9 +1159,14 @@ pub fn purge_candidates(plan: Option<&str>, min_days: u64) -> Result<PurgeList, 
     };
     let mut out = Vec::new();
     let mut refused = Vec::new();
+    let mut quarantined = 0;
     for id in ids {
-        for e in read_journal(&id) {
-            if e.state == "quarantined" && now.saturating_sub(e.moved_at) >= min_age_secs {
+        for e in read_journal(&id)
+            .into_iter()
+            .filter(|e| e.state == "quarantined")
+        {
+            quarantined += 1;
+            if now.saturating_sub(e.moved_at) >= min_age_secs {
                 match check_in_quarantine(&id, &e) {
                     Ok(()) => out.push((id.clone(), e)),
                     Err(why) => refused.push(why),
@@ -1168,7 +1174,7 @@ pub fn purge_candidates(plan: Option<&str>, min_days: u64) -> Result<PurgeList, 
             }
         }
     }
-    Ok((out, refused))
+    Ok((out, refused, quarantined))
 }
 
 /// Permanently delete quarantined entries. Returns (freed bytes, problems).

@@ -453,7 +453,7 @@ fn cmd_purge(rest: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     let days = a.num("older-than")?.unwrap_or(7);
-    let (list, refused) = cleanup::purge_candidates(a.one("plan"), days)?;
+    let (list, refused, quarantined) = cleanup::purge_candidates(a.one("plan"), days)?;
     let status = |problems: bool| {
         if problems {
             ExitCode::from(1)
@@ -466,7 +466,14 @@ fn cmd_purge(rest: &[String]) -> Result<ExitCode, String> {
     }
     if list.is_empty() {
         if refused.is_empty() {
-            println!("Nothing in quarantine is older than {days} day(s).");
+            match a.one("plan") {
+                Some(plan) if quarantined == 0 => {
+                    println!("Nothing in quarantine for plan '{plan}'. See the plans with: agentdisk quarantine");
+                    return Ok(ExitCode::from(1));
+                }
+                Some(plan) => println!("Plan {plan} has {quarantined} item(s) in quarantine, none older than {days} day(s). Use --older-than 0 to delete them now."),
+                None => println!("Nothing in quarantine is older than {days} day(s)."),
+            }
         } else {
             println!("Nothing was deleted.");
         }

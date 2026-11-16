@@ -209,6 +209,10 @@ fn write_journal(dir: &Path, entries: &[(&Path, &Path)]) {
 }
 
 fn write_journal_at(dir: &Path, entries: &[(&Path, &Path)], moved_at: u64) {
+    write_journal_state(dir, entries, moved_at, "quarantined");
+}
+
+fn write_journal_state(dir: &Path, entries: &[(&Path, &Path)], moved_at: u64, state: &str) {
     use agentdisk_core::json::Value;
     let v: Vec<Value> = entries
         .iter()
@@ -219,12 +223,80 @@ fn write_journal_at(dir: &Path, entries: &[(&Path, &Path)], moved_at: u64) {
                 ("kind", "build-folder".into()),
                 ("bytes", 10u64.into()),
                 ("moved_at", moved_at.into()),
-                ("state", "quarantined".into()),
+                ("state", state.into()),
             ])
         })
         .collect();
     fs::create_dir_all(dir).unwrap();
     fs::write(dir.join("journal.json"), Value::Arr(v).pretty()).unwrap();
+}
+
+#[test]
+fn purge_named_plan_reports_nothing_in_quarantine() {
+    let h = tmp("purge-empty-plan");
+    let id = "20990101-abcdef";
+    let plan = h.join("agentdisk/quarantine").join(id);
+    let inside = plan.join("000-node_modules");
+    for state in [None, Some("restored"), Some("purged")] {
+        if let Some(state) = state {
+            write_journal_state(&plan, &[(&h.join("app/node_modules"), &inside)], 0, state);
+        }
+        let (code, out, err) = run(&h, &["purge", "--plan", id, "--dry-run"]);
+        assert_eq!(code, 1, "{out}{err}");
+        assert_eq!(
+            out,
+            format!(
+                "Nothing in quarantine for plan '{id}'. See the plans with: agentdisk quarantine\n"
+            )
+        );
+        assert_eq!(err, "");
+    }
+    write_journal(&plan, &[]);
+    let (code, out, err) = run(&h, &["purge", "--plan", id, "--dry-run"]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert_eq!(
+        out,
+        format!(
+            "Nothing in quarantine for plan '{id}'. See the plans with: agentdisk quarantine\n"
+        )
+    );
+    assert_eq!(err, "");
+    let (code, out, err) = run(&h, &["purge", "--dry-run"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(out, "Nothing in quarantine is older than 7 day(s).\n");
+    assert_eq!(err, "");
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn purge_named_plan_reports_items_waiting_for_the_age_threshold() {
+    let h = tmp("purge-young-plan");
+    let id = "20990101-abcdef";
+    let plan = h.join("agentdisk/quarantine").join(id);
+    let first = plan.join("000-node_modules");
+    let second = plan.join("001-target");
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir_all(&second).unwrap();
+    write_journal_at(
+        &plan,
+        &[
+            (&h.join("app/node_modules"), &first),
+            (&h.join("app/target"), &second),
+        ],
+        agentdisk_core::size::now_secs(),
+    );
+    let journal = fs::read(plan.join("journal.json")).unwrap();
+    let (code, out, err) = run(&h, &["purge", "--plan", id, "--dry-run"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(out, format!("Plan {id} has 2 item(s) in quarantine, none older than 7 day(s). Use --older-than 0 to delete them now.\n"));
+    assert_eq!(err, "");
+    let (code, out, err) = run(&h, &["purge", "--dry-run"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(out, "Nothing in quarantine is older than 7 day(s).\n");
+    assert_eq!(err, "");
+    assert_eq!(fs::read(plan.join("journal.json")).unwrap(), journal);
+    assert!(first.is_dir() && second.is_dir());
+    fs::remove_dir_all(&h).unwrap();
 }
 
 #[test]
@@ -252,7 +324,11 @@ fn purge_huge_age_leaves_fresh_quarantine_entries_alone() {
             assert_eq!(code, 0, "{out}{err}");
             assert_eq!(
                 out,
-                format!("Nothing in quarantine is older than {days} day(s).\n")
+                if selected_plan {
+                    format!("Plan 20990101-abcdef has 1 item(s) in quarantine, none older than {days} day(s). Use --older-than 0 to delete them now.\n")
+                } else {
+                    format!("Nothing in quarantine is older than {days} day(s).\n")
+                }
             );
             assert_eq!(err, "");
         }
