@@ -41,6 +41,93 @@ fn run(home: &PathBuf, args: &[&str]) -> (i32, String, String) {
     )
 }
 
+fn read_one_line_then_close(mut command: Command) {
+    use std::io::{BufRead, BufReader};
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut first_line = String::new();
+    assert!(reader.read_line(&mut first_line).unwrap() > 0);
+    drop(reader);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn closed_stdout_stops_adapters_quietly() {
+    let h = tmp("broken-adapters");
+    let adapters = h.join("adapters");
+    fs::create_dir_all(&adapters).unwrap();
+    // More output than a pipe can hold ensures the writer is still active
+    // when the reader closes after its first line.
+    fs::write(
+        adapters.join("large.toml"),
+        format!(
+            "id = \"large\"\nname = \"{}\"\nvendor = \"fixture\"\n",
+            "x".repeat(1024 * 1024)
+        ),
+    )
+    .unwrap();
+    for json in [false, true] {
+        let mut command = bin(&h);
+        command.arg("adapters").arg("--adapters").arg(&adapters);
+        if json {
+            command.arg("--json");
+        }
+        read_one_line_then_close(command);
+    }
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn stdout_write_errors_other_than_a_closed_pipe_are_reported() {
+    let h = tmp("full-output");
+    let output = bin(&h)
+        .arg("--help")
+        .stdout(
+            fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap(),
+        )
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("error: "), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn closed_stdout_stops_repeated_folder_output_quietly() {
+    let h = tmp("broken-folders");
+    let folder = h.join("folder");
+    fs::create_dir_all(&folder).unwrap();
+    for name in ["size", "explain"] {
+        let mut command = bin(&h);
+        command.current_dir(&h).arg(name);
+        command.args(std::iter::repeat_n("folder", 1024));
+        read_one_line_then_close(command);
+    }
+    fs::remove_dir_all(&h).unwrap();
+}
+
 #[test]
 fn version_and_help() {
     let h = tmp("v");
@@ -115,28 +202,56 @@ fn size_command() {
 }
 
 #[test]
-fn plan_reports_scan_warnings_in_text_and_json() {
-    let h = tmp("plan-warnings");
-    let missing = h.join("missing");
-    let expected = format!(
-        "project folder not found: {}",
-        agentdisk_core::paths::display(&missing)
+fn scan_warns_when_a_project_path_is_a_file() {
+    let h = tmp("project-file");
+    let project = h.join("app");
+    fs::create_dir_all(project.join("node_modules/dependency")).unwrap();
+    let file = project.join("package.json");
+    fs::write(&file, "{}").unwrap();
+    let file_arg = file.to_str().unwrap();
+    let warning = format!(
+        "project path is not a folder: {}",
+        agentdisk_core::paths::display(&file)
     );
-    let (code, out, err) = run(
-        &h,
-        &["plan", "-p", missing.to_str().unwrap(), "--no-agents"],
-    );
-    assert_eq!(code, 0, "{out}{err}");
-    assert!(
-        out.contains("Nothing to clean, but the scan had warnings."),
-        "{out}"
-    );
-    assert!(out.contains(&format!("WARNINGS\n  - {expected}")), "{out}");
 
+    let (code, out, err) = run(&h, &["scan", "-p", file_arg, "--no-agents", "--json"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let report = agentdisk_core::json::parse(&out).unwrap();
+    assert_eq!(
+        report.get("warnings").unwrap().as_arr().unwrap(),
+        &[agentdisk_core::json::Value::from(warning.as_str())]
+    );
+    assert!(report
+        .get("build_folders")
+        .unwrap()
+        .as_arr()
+        .unwrap()
+        .is_empty());
+
+    let (code, out, err) = run(&h, &["scan", "-p", file_arg, "--no-agents"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains(&format!("WARNINGS\n  - {warning}")), "{out}");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "{}");
+    assert!(!h.join("agentdisk").exists(), "a scan must not write");
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn scan_keeps_valid_roots_and_the_missing_folder_warning() {
+    let h = tmp("project-roots");
+    let project = h.join("app");
+    fs::create_dir_all(project.join("node_modules/dependency")).unwrap();
+    let file = project.join("package.json");
+    fs::write(&file, "{}").unwrap();
+    let missing = h.join("missing");
     let (code, out, err) = run(
         &h,
         &[
-            "plan",
+            "scan",
+            "-p",
+            file.to_str().unwrap(),
+            "-p",
+            project.to_str().unwrap(),
             "-p",
             missing.to_str().unwrap(),
             "--no-agents",
@@ -144,35 +259,33 @@ fn plan_reports_scan_warnings_in_text_and_json() {
         ],
     );
     assert_eq!(code, 0, "{out}{err}");
-    let plan = agentdisk_core::json::parse(&out).unwrap();
-    assert_eq!(plan.get("schema_version").unwrap().as_u64(), Some(1));
+    let report = agentdisk_core::json::parse(&out).unwrap();
+    let warnings: Vec<_> = report
+        .get("warnings")
+        .unwrap()
+        .as_arr()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
     assert_eq!(
-        plan.get("warnings").unwrap().as_arr().unwrap(),
-        &[agentdisk_core::json::Value::from(expected)]
+        warnings,
+        vec![
+            format!(
+                "project path is not a folder: {}",
+                agentdisk_core::paths::display(&file)
+            ),
+            format!(
+                "project folder not found: {}",
+                agentdisk_core::paths::display(&missing)
+            ),
+        ]
     );
-    assert!(plan.get("items").unwrap().as_arr().unwrap().is_empty());
-    let id = plan.get("id").unwrap().as_str().unwrap();
-    let saved = fs::read_to_string(h.join("agentdisk/plans").join(format!("{id}.json"))).unwrap();
-    assert_eq!(agentdisk_core::json::parse(&saved).unwrap(), plan);
-    assert!(
-        !missing.exists(),
-        "planning must not create the missing project root"
+    assert_eq!(
+        report.get("build_folders").unwrap().as_arr().unwrap().len(),
+        1
     );
-    fs::remove_dir_all(&h).unwrap();
-}
-
-#[test]
-fn plan_without_scan_warnings_keeps_its_empty_message() {
-    let h = tmp("plan-no-warnings");
-    let project = h.join("project");
-    fs::create_dir_all(&project).unwrap();
-    let (code, out, err) = run(
-        &h,
-        &["plan", "-p", project.to_str().unwrap(), "--no-agents"],
-    );
-    assert_eq!(code, 0, "{out}{err}");
-    assert!(out.contains("Nothing is safe to clean right now."), "{out}");
-    assert!(!out.contains("WARNINGS"), "{out}");
+    assert!(!h.join("agentdisk").exists(), "a scan must not write");
     fs::remove_dir_all(&h).unwrap();
 }
 
@@ -701,4 +814,66 @@ fn manifest_versions_match_cargo() {
     }
     let changelog = fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
     assert!(changelog.contains(&format!("## {}", env!("CARGO_PKG_VERSION"))));
+}
+
+#[test]
+fn plan_reports_scan_warnings_in_text_and_json() {
+    let h = tmp("plan-warnings");
+    let missing = h.join("missing");
+    let expected = format!(
+        "project folder not found: {}",
+        agentdisk_core::paths::display(&missing)
+    );
+    let (code, out, err) = run(
+        &h,
+        &["plan", "-p", missing.to_str().unwrap(), "--no-agents"],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(
+        out.contains("Nothing to clean, but the scan had warnings."),
+        "{out}"
+    );
+    assert!(out.contains(&format!("WARNINGS\n  - {expected}")), "{out}");
+
+    let (code, out, err) = run(
+        &h,
+        &[
+            "plan",
+            "-p",
+            missing.to_str().unwrap(),
+            "--no-agents",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    let plan = agentdisk_core::json::parse(&out).unwrap();
+    assert_eq!(plan.get("schema_version").unwrap().as_u64(), Some(1));
+    assert_eq!(
+        plan.get("warnings").unwrap().as_arr().unwrap(),
+        &[agentdisk_core::json::Value::from(expected)]
+    );
+    assert!(plan.get("items").unwrap().as_arr().unwrap().is_empty());
+    let id = plan.get("id").unwrap().as_str().unwrap();
+    let saved = fs::read_to_string(h.join("agentdisk/plans").join(format!("{id}.json"))).unwrap();
+    assert_eq!(agentdisk_core::json::parse(&saved).unwrap(), plan);
+    assert!(
+        !missing.exists(),
+        "planning must not create the missing project root"
+    );
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn plan_without_scan_warnings_keeps_its_empty_message() {
+    let h = tmp("plan-no-warnings");
+    let project = h.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let (code, out, err) = run(
+        &h,
+        &["plan", "-p", project.to_str().unwrap(), "--no-agents"],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("Nothing is safe to clean right now."), "{out}");
+    assert!(!out.contains("WARNINGS"), "{out}");
+    fs::remove_dir_all(&h).unwrap();
 }
