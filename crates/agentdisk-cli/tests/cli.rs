@@ -115,6 +115,68 @@ fn size_command() {
 }
 
 #[test]
+fn plan_reports_scan_warnings_in_text_and_json() {
+    let h = tmp("plan-warnings");
+    let missing = h.join("missing");
+    let expected = format!(
+        "project folder not found: {}",
+        agentdisk_core::paths::display(&missing)
+    );
+    let (code, out, err) = run(
+        &h,
+        &["plan", "-p", missing.to_str().unwrap(), "--no-agents"],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(
+        out.contains("Nothing to clean, but the scan had warnings."),
+        "{out}"
+    );
+    assert!(out.contains(&format!("WARNINGS\n  - {expected}")), "{out}");
+
+    let (code, out, err) = run(
+        &h,
+        &[
+            "plan",
+            "-p",
+            missing.to_str().unwrap(),
+            "--no-agents",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    let plan = agentdisk_core::json::parse(&out).unwrap();
+    assert_eq!(plan.get("schema_version").unwrap().as_u64(), Some(1));
+    assert_eq!(
+        plan.get("warnings").unwrap().as_arr().unwrap(),
+        &[agentdisk_core::json::Value::from(expected)]
+    );
+    assert!(plan.get("items").unwrap().as_arr().unwrap().is_empty());
+    let id = plan.get("id").unwrap().as_str().unwrap();
+    let saved = fs::read_to_string(h.join("agentdisk/plans").join(format!("{id}.json"))).unwrap();
+    assert_eq!(agentdisk_core::json::parse(&saved).unwrap(), plan);
+    assert!(
+        !missing.exists(),
+        "planning must not create the missing project root"
+    );
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn plan_without_scan_warnings_keeps_its_empty_message() {
+    let h = tmp("plan-no-warnings");
+    let project = h.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let (code, out, err) = run(
+        &h,
+        &["plan", "-p", project.to_str().unwrap(), "--no-agents"],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("Nothing is safe to clean right now."), "{out}");
+    assert!(!out.contains("WARNINGS"), "{out}");
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
 fn apply_and_purge_refuse_without_a_terminal() {
     let h = tmp("apply");
     let (code, _, _) = run(&h, &["plan"]);
