@@ -189,12 +189,14 @@ pub fn run(opts: &ScanOptions) -> Report {
     let mut roots: Vec<PathBuf> = opts
         .projects
         .iter()
-        .filter(|p| p.exists())
+        .filter(|p| p.is_dir())
         .cloned()
         .collect();
     for p in &opts.projects {
         if !p.exists() {
             warnings.push(format!("project folder not found: {}", display(p)));
+        } else if !p.is_dir() {
+            warnings.push(format!("project path is not a folder: {}", display(p)));
         }
     }
     roots.extend(adapter_worktree_dirs.iter().cloned());
