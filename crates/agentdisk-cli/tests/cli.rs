@@ -41,6 +41,93 @@ fn run(home: &PathBuf, args: &[&str]) -> (i32, String, String) {
     )
 }
 
+fn read_one_line_then_close(mut command: Command) {
+    use std::io::{BufRead, BufReader};
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut first_line = String::new();
+    assert!(reader.read_line(&mut first_line).unwrap() > 0);
+    drop(reader);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn closed_stdout_stops_adapters_quietly() {
+    let h = tmp("broken-adapters");
+    let adapters = h.join("adapters");
+    fs::create_dir_all(&adapters).unwrap();
+    // More output than a pipe can hold ensures the writer is still active
+    // when the reader closes after its first line.
+    fs::write(
+        adapters.join("large.toml"),
+        format!(
+            "id = \"large\"\nname = \"{}\"\nvendor = \"fixture\"\n",
+            "x".repeat(1024 * 1024)
+        ),
+    )
+    .unwrap();
+    for json in [false, true] {
+        let mut command = bin(&h);
+        command.arg("adapters").arg("--adapters").arg(&adapters);
+        if json {
+            command.arg("--json");
+        }
+        read_one_line_then_close(command);
+    }
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn stdout_write_errors_other_than_a_closed_pipe_are_reported() {
+    let h = tmp("full-output");
+    let output = bin(&h)
+        .arg("--help")
+        .stdout(
+            fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap(),
+        )
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("error: "), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn closed_stdout_stops_repeated_folder_output_quietly() {
+    let h = tmp("broken-folders");
+    let folder = h.join("folder");
+    fs::create_dir_all(&folder).unwrap();
+    for name in ["size", "explain"] {
+        let mut command = bin(&h);
+        command.current_dir(&h).arg(name);
+        command.args(std::iter::repeat_n("folder", 1024));
+        read_one_line_then_close(command);
+    }
+    fs::remove_dir_all(&h).unwrap();
+}
+
 #[test]
 fn version_and_help() {
     let h = tmp("v");
@@ -115,59 +202,90 @@ fn size_command() {
 }
 
 #[test]
-fn extra_arguments_are_refused_before_scanning_or_writing() {
-    let h = tmp("extra-arguments");
-    for command in ["scan", "advise", "plan"] {
-        let (code, out, err) = run(&h, &[command, "demo"]);
-        assert_eq!(code, 2, "{command}: {out}{err}");
-        assert_eq!(out, "");
-        assert_eq!(
-            err,
-            "error: unexpected argument 'demo'. Did you mean `-p demo`?\n"
-        );
-        assert!(
-            !h.join("agentdisk").exists(),
-            "invalid arguments must not save a plan"
-        );
-    }
-    for command in ["check", "plans", "adapters", "config"] {
-        let (code, out, err) = run(&h, &[command, "demo"]);
-        assert_eq!(code, 2, "{command}: {out}{err}");
-        assert_eq!(out, "");
-        assert_eq!(err, "error: unexpected argument 'demo'\n");
-    }
-    let (code, out, err) = run(&h, &["config", "--init", "demo"]);
-    assert_eq!(code, 2, "{out}{err}");
-    assert_eq!(out, "");
-    assert_eq!(err, "error: unexpected argument 'demo'\n");
-    assert!(
-        !h.join("agentdisk").exists(),
-        "invalid arguments must not write config"
+fn scan_warns_when_a_project_path_is_a_file() {
+    let h = tmp("project-file");
+    let project = h.join("app");
+    fs::create_dir_all(project.join("node_modules/dependency")).unwrap();
+    let file = project.join("package.json");
+    fs::write(&file, "{}").unwrap();
+    let file_arg = file.to_str().unwrap();
+    let warning = format!(
+        "project path is not a folder: {}",
+        agentdisk_core::paths::display(&file)
     );
+
+    let (code, out, err) = run(&h, &["scan", "-p", file_arg, "--no-agents", "--json"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let report = agentdisk_core::json::parse(&out).unwrap();
+    assert_eq!(
+        report.get("warnings").unwrap().as_arr().unwrap(),
+        &[agentdisk_core::json::Value::from(warning.as_str())]
+    );
+    assert!(report
+        .get("build_folders")
+        .unwrap()
+        .as_arr()
+        .unwrap()
+        .is_empty());
+
+    let (code, out, err) = run(&h, &["scan", "-p", file_arg, "--no-agents"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains(&format!("WARNINGS\n  - {warning}")), "{out}");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "{}");
+    assert!(!h.join("agentdisk").exists(), "a scan must not write");
     fs::remove_dir_all(&h).unwrap();
 }
 
 #[test]
-fn extra_purge_argument_is_not_treated_as_an_all_plan_request() {
-    let h = tmp("extra-purge-argument");
-    let plan = h.join("agentdisk/quarantine/20990101-abcdef");
-    let inside = plan.join("000-node_modules");
-    fs::create_dir_all(&inside).unwrap();
-    fs::write(inside.join("keep.txt"), b"keep").unwrap();
-    write_journal(&plan, &[(&h.join("app/node_modules"), &inside)]);
-    let journal = fs::read(plan.join("journal.json")).unwrap();
+fn scan_keeps_valid_roots_and_the_missing_folder_warning() {
+    let h = tmp("project-roots");
+    let project = h.join("app");
+    fs::create_dir_all(project.join("node_modules/dependency")).unwrap();
+    let file = project.join("package.json");
+    fs::write(&file, "{}").unwrap();
+    let missing = h.join("missing");
     let (code, out, err) = run(
         &h,
-        &["purge", "20990101-999999", "--older-than", "0", "--dry-run"],
+        &[
+            "scan",
+            "-p",
+            file.to_str().unwrap(),
+            "-p",
+            project.to_str().unwrap(),
+            "-p",
+            missing.to_str().unwrap(),
+            "--no-agents",
+            "--json",
+        ],
     );
-    assert_eq!(code, 2, "{out}{err}");
-    assert_eq!(out, "");
+    assert_eq!(code, 0, "{out}{err}");
+    let report = agentdisk_core::json::parse(&out).unwrap();
+    let warnings: Vec<_> = report
+        .get("warnings")
+        .unwrap()
+        .as_arr()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
     assert_eq!(
-        err,
-        "error: unexpected argument '20990101-999999'. Did you mean `--plan 20990101-999999`?\n"
+        warnings,
+        vec![
+            format!(
+                "project path is not a folder: {}",
+                agentdisk_core::paths::display(&file)
+            ),
+            format!(
+                "project folder not found: {}",
+                agentdisk_core::paths::display(&missing)
+            ),
+        ]
     );
-    assert_eq!(fs::read(plan.join("journal.json")).unwrap(), journal);
-    assert_eq!(fs::read(inside.join("keep.txt")).unwrap(), b"keep");
+    assert_eq!(
+        report.get("build_folders").unwrap().as_arr().unwrap().len(),
+        1
+    );
+    assert!(!h.join("agentdisk").exists(), "a scan must not write");
     fs::remove_dir_all(&h).unwrap();
 }
 
@@ -266,6 +384,10 @@ fn write_journal(dir: &Path, entries: &[(&Path, &Path)]) {
 }
 
 fn write_journal_at(dir: &Path, entries: &[(&Path, &Path)], moved_at: u64) {
+    write_journal_state(dir, entries, moved_at, "quarantined");
+}
+
+fn write_journal_state(dir: &Path, entries: &[(&Path, &Path)], moved_at: u64, state: &str) {
     use agentdisk_core::json::Value;
     let v: Vec<Value> = entries
         .iter()
@@ -276,12 +398,80 @@ fn write_journal_at(dir: &Path, entries: &[(&Path, &Path)], moved_at: u64) {
                 ("kind", "build-folder".into()),
                 ("bytes", 10u64.into()),
                 ("moved_at", moved_at.into()),
-                ("state", "quarantined".into()),
+                ("state", state.into()),
             ])
         })
         .collect();
     fs::create_dir_all(dir).unwrap();
     fs::write(dir.join("journal.json"), Value::Arr(v).pretty()).unwrap();
+}
+
+#[test]
+fn purge_named_plan_reports_nothing_in_quarantine() {
+    let h = tmp("purge-empty-plan");
+    let id = "20990101-abcdef";
+    let plan = h.join("agentdisk/quarantine").join(id);
+    let inside = plan.join("000-node_modules");
+    for state in [None, Some("restored"), Some("purged")] {
+        if let Some(state) = state {
+            write_journal_state(&plan, &[(&h.join("app/node_modules"), &inside)], 0, state);
+        }
+        let (code, out, err) = run(&h, &["purge", "--plan", id, "--dry-run"]);
+        assert_eq!(code, 1, "{out}{err}");
+        assert_eq!(
+            out,
+            format!(
+                "Nothing in quarantine for plan '{id}'. See the plans with: agentdisk quarantine\n"
+            )
+        );
+        assert_eq!(err, "");
+    }
+    write_journal(&plan, &[]);
+    let (code, out, err) = run(&h, &["purge", "--plan", id, "--dry-run"]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert_eq!(
+        out,
+        format!(
+            "Nothing in quarantine for plan '{id}'. See the plans with: agentdisk quarantine\n"
+        )
+    );
+    assert_eq!(err, "");
+    let (code, out, err) = run(&h, &["purge", "--dry-run"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(out, "Nothing in quarantine is older than 7 day(s).\n");
+    assert_eq!(err, "");
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn purge_named_plan_reports_items_waiting_for_the_age_threshold() {
+    let h = tmp("purge-young-plan");
+    let id = "20990101-abcdef";
+    let plan = h.join("agentdisk/quarantine").join(id);
+    let first = plan.join("000-node_modules");
+    let second = plan.join("001-target");
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir_all(&second).unwrap();
+    write_journal_at(
+        &plan,
+        &[
+            (&h.join("app/node_modules"), &first),
+            (&h.join("app/target"), &second),
+        ],
+        agentdisk_core::size::now_secs(),
+    );
+    let journal = fs::read(plan.join("journal.json")).unwrap();
+    let (code, out, err) = run(&h, &["purge", "--plan", id, "--dry-run"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(out, format!("Plan {id} has 2 item(s) in quarantine, none older than 7 day(s). Use --older-than 0 to delete them now.\n"));
+    assert_eq!(err, "");
+    let (code, out, err) = run(&h, &["purge", "--dry-run"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(out, "Nothing in quarantine is older than 7 day(s).\n");
+    assert_eq!(err, "");
+    assert_eq!(fs::read(plan.join("journal.json")).unwrap(), journal);
+    assert!(first.is_dir() && second.is_dir());
+    fs::remove_dir_all(&h).unwrap();
 }
 
 #[test]
@@ -309,7 +499,11 @@ fn purge_huge_age_leaves_fresh_quarantine_entries_alone() {
             assert_eq!(code, 0, "{out}{err}");
             assert_eq!(
                 out,
-                format!("Nothing in quarantine is older than {days} day(s).\n")
+                if selected_plan {
+                    format!("Plan 20990101-abcdef has 1 item(s) in quarantine, none older than {days} day(s). Use --older-than 0 to delete them now.\n")
+                } else {
+                    format!("Nothing in quarantine is older than {days} day(s).\n")
+                }
             );
             assert_eq!(err, "");
         }
@@ -620,4 +814,61 @@ fn manifest_versions_match_cargo() {
     }
     let changelog = fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
     assert!(changelog.contains(&format!("## {}", env!("CARGO_PKG_VERSION"))));
+}
+
+#[test]
+fn extra_arguments_are_refused_before_scanning_or_writing() {
+    let h = tmp("extra-arguments");
+    for command in ["scan", "advise", "plan"] {
+        let (code, out, err) = run(&h, &[command, "demo"]);
+        assert_eq!(code, 2, "{command}: {out}{err}");
+        assert_eq!(out, "");
+        assert_eq!(
+            err,
+            "error: unexpected argument 'demo'. Did you mean `-p demo`?\n"
+        );
+        assert!(
+            !h.join("agentdisk").exists(),
+            "invalid arguments must not save a plan"
+        );
+    }
+    for command in ["check", "plans", "adapters", "config"] {
+        let (code, out, err) = run(&h, &[command, "demo"]);
+        assert_eq!(code, 2, "{command}: {out}{err}");
+        assert_eq!(out, "");
+        assert_eq!(err, "error: unexpected argument 'demo'\n");
+    }
+    let (code, out, err) = run(&h, &["config", "--init", "demo"]);
+    assert_eq!(code, 2, "{out}{err}");
+    assert_eq!(out, "");
+    assert_eq!(err, "error: unexpected argument 'demo'\n");
+    assert!(
+        !h.join("agentdisk").exists(),
+        "invalid arguments must not write config"
+    );
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn extra_purge_argument_is_not_treated_as_an_all_plan_request() {
+    let h = tmp("extra-purge-argument");
+    let plan = h.join("agentdisk/quarantine/20990101-abcdef");
+    let inside = plan.join("000-node_modules");
+    fs::create_dir_all(&inside).unwrap();
+    fs::write(inside.join("keep.txt"), b"keep").unwrap();
+    write_journal(&plan, &[(&h.join("app/node_modules"), &inside)]);
+    let journal = fs::read(plan.join("journal.json")).unwrap();
+    let (code, out, err) = run(
+        &h,
+        &["purge", "20990101-999999", "--older-than", "0", "--dry-run"],
+    );
+    assert_eq!(code, 2, "{out}{err}");
+    assert_eq!(out, "");
+    assert_eq!(
+        err,
+        "error: unexpected argument '20990101-999999'. Did you mean `--plan 20990101-999999`?\n"
+    );
+    assert_eq!(fs::read(plan.join("journal.json")).unwrap(), journal);
+    assert_eq!(fs::read(inside.join("keep.txt")).unwrap(), b"keep");
+    fs::remove_dir_all(&h).unwrap();
 }
