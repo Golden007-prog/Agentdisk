@@ -290,7 +290,7 @@ fn cmd_size(rest: &[String]) -> Result<ExitCode, String> {
 fn cmd_advise(rest: &[String]) -> Result<ExitCode, String> {
     let a = parse(rest, SCAN_FLAGS, &["json", "no-agents"])?;
     if a.has("help") {
-        println!("agentdisk advise [-p <dir>]... [--json]\n\nSuggestions only; agentdisk never runs them.");
+        println!("agentdisk advise [-p <dir>]... [--json] [--depth N] [--threads N]\n                 [--adapters <dir>] [--no-agents]\n\nSuggestions only; agentdisk never runs them.");
         return Ok(ExitCode::SUCCESS);
     }
     let cfg = config::load();
@@ -320,7 +320,7 @@ fn cmd_plan(rest: &[String]) -> Result<ExitCode, String> {
         ],
     )?;
     if a.has("help") {
-        println!("agentdisk plan [-p <dir>]... [--worktree-days N] [--build-days N]\n                [--no-worktrees] [--no-build] [--no-agent-caches] [--json]\n\nMakes and saves a cleanup plan. Moves nothing. A person applies it with\n`agentdisk apply <id>` in a terminal.");
+        println!("agentdisk plan [-p <dir>]... [--worktree-days N] [--build-days N]\n                [--no-worktrees] [--no-build] [--no-agent-caches] [--json]\n                [--depth N] [--threads N] [--adapters <dir>] [--no-agents]\n\nMakes and saves a cleanup plan. Moves nothing. A person applies it with\n`agentdisk apply <id>` in a terminal.");
         return Ok(ExitCode::SUCCESS);
     }
     let cfg = config::load();
@@ -563,6 +563,10 @@ fn cmd_check(rest: &[String]) -> Result<ExitCode, String> {
 
 fn cmd_adapters(rest: &[String]) -> Result<ExitCode, String> {
     let a = parse(rest, &["adapters"], &["json"])?;
+    if a.has("help") {
+        println!("agentdisk adapters [--adapters <dir>]... [--json]\n\nList known agents and their data locations.");
+        return Ok(ExitCode::SUCCESS);
+    }
     let cfg = config::load();
     let mut dirs = cfg.adapters.clone();
     dirs.extend(a.many("adapters").into_iter().map(PathBuf::from));
@@ -644,6 +648,10 @@ fn cmd_adapters(rest: &[String]) -> Result<ExitCode, String> {
 
 fn cmd_config(rest: &[String]) -> Result<ExitCode, String> {
     let a = parse(rest, &[], &["init"])?;
+    if a.has("help") {
+        println!("agentdisk config [--init]\n\nShow configuration paths and settings. --init writes an example file.");
+        return Ok(ExitCode::SUCCESS);
+    }
     let path = config::path();
     if a.has("init") {
         if path.exists() {
@@ -715,7 +723,12 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         "adapters" => cmd_adapters(rest),
         "config" => cmd_config(rest),
         "mcp" => {
-            mcp::serve().map_err(|e| e.to_string())?;
+            let a = parse(rest, &[], &[])?;
+            if a.has("help") {
+                println!("agentdisk mcp\n\nRun the MCP server on standard input and output.");
+            } else {
+                mcp::serve().map_err(|e| e.to_string())?;
+            }
             Ok(ExitCode::SUCCESS)
         }
         other => Err(format!(
