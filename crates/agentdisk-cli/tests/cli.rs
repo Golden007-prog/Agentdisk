@@ -121,8 +121,8 @@ fn closed_stdout_stops_repeated_folder_output_quietly() {
     fs::create_dir_all(&folder).unwrap();
     for name in ["size", "explain"] {
         let mut command = bin(&h);
-        command.arg(name);
-        command.args(std::iter::repeat_n(&folder, 4096));
+        command.current_dir(&h).arg(name);
+        command.args(std::iter::repeat_n("folder", 1024));
         read_one_line_then_close(command);
     }
     fs::remove_dir_all(&h).unwrap();
