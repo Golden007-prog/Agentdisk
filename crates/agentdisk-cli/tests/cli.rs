@@ -202,6 +202,94 @@ fn size_command() {
 }
 
 #[test]
+fn scan_warns_when_a_project_path_is_a_file() {
+    let h = tmp("project-file");
+    let project = h.join("app");
+    fs::create_dir_all(project.join("node_modules/dependency")).unwrap();
+    let file = project.join("package.json");
+    fs::write(&file, "{}").unwrap();
+    let file_arg = file.to_str().unwrap();
+    let warning = format!(
+        "project path is not a folder: {}",
+        agentdisk_core::paths::display(&file)
+    );
+
+    let (code, out, err) = run(&h, &["scan", "-p", file_arg, "--no-agents", "--json"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let report = agentdisk_core::json::parse(&out).unwrap();
+    assert_eq!(
+        report.get("warnings").unwrap().as_arr().unwrap(),
+        &[agentdisk_core::json::Value::from(warning.as_str())]
+    );
+    assert!(report
+        .get("build_folders")
+        .unwrap()
+        .as_arr()
+        .unwrap()
+        .is_empty());
+
+    let (code, out, err) = run(&h, &["scan", "-p", file_arg, "--no-agents"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains(&format!("WARNINGS\n  - {warning}")), "{out}");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "{}");
+    assert!(!h.join("agentdisk").exists(), "a scan must not write");
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn scan_keeps_valid_roots_and_the_missing_folder_warning() {
+    let h = tmp("project-roots");
+    let project = h.join("app");
+    fs::create_dir_all(project.join("node_modules/dependency")).unwrap();
+    let file = project.join("package.json");
+    fs::write(&file, "{}").unwrap();
+    let missing = h.join("missing");
+    let (code, out, err) = run(
+        &h,
+        &[
+            "scan",
+            "-p",
+            file.to_str().unwrap(),
+            "-p",
+            project.to_str().unwrap(),
+            "-p",
+            missing.to_str().unwrap(),
+            "--no-agents",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    let report = agentdisk_core::json::parse(&out).unwrap();
+    let warnings: Vec<_> = report
+        .get("warnings")
+        .unwrap()
+        .as_arr()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        warnings,
+        vec![
+            format!(
+                "project path is not a folder: {}",
+                agentdisk_core::paths::display(&file)
+            ),
+            format!(
+                "project folder not found: {}",
+                agentdisk_core::paths::display(&missing)
+            ),
+        ]
+    );
+    assert_eq!(
+        report.get("build_folders").unwrap().as_arr().unwrap().len(),
+        1
+    );
+    assert!(!h.join("agentdisk").exists(), "a scan must not write");
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
 fn apply_and_purge_refuse_without_a_terminal() {
     let h = tmp("apply");
     let (code, _, _) = run(&h, &["plan"]);
