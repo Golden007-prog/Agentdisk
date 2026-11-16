@@ -10,6 +10,7 @@
 - MCP: `projects` that is not a list of strings, and `worktree_days` / `build_days` that are not whole numbers of 0 or more, are tool errors (`isError: true`) that name the argument, instead of being dropped for the defaults. Missing arguments still use the defaults. Thanks to @ViktorBystrov72! (#46, #55)
 - `purge --plan <id>` names the plan and exits 1 when nothing is in its quarantine, like `restore`. When the plan's items are too young, it says how many wait and how to delete them now (`--older-than 0`). Unscoped `purge` prints what it did before. Thanks to @ViktorBystrov72! (#44, #60)
 - A closed output pipe, such as `agentdisk adapters | head -1`, now stops quietly with exit status 0 instead of panicking. Other write errors are still reported as `error: ...` with exit 2. Thanks to @ViktorBystrov72! (#48, #61)
+- `scan`, `plan` and the other scanning commands now warn `project path is not a folder: <path>` when a `-p` / `projects` entry is a file instead of a folder; before, it gave no warning at all. Missing folders still give `project folder not found`. Thanks to @ViktorBystrov72! (#42, #62)
 
 ## 0.3.1
 
