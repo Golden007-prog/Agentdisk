@@ -674,6 +674,157 @@ fn adapters_and_check() {
     fs::remove_dir_all(&h).unwrap();
 }
 
+fn configured_check_home(tag: &str) -> PathBuf {
+    let h = tmp(tag);
+    let adapters = h.join("extra-adapters");
+    fs::create_dir_all(&adapters).unwrap();
+    fs::write(
+        adapters.join("check-fixture.toml"),
+        r#"id = "check-fixture"
+name = "Check Fixture"
+vendor = "fixture"
+[[path]]
+id = "worktrees"
+path = "{home}/.check-fixture/worktrees/*"
+kind = "worktree"
+class = "user-data"
+marker = "/.check-fixture/worktrees/"
+"#,
+    )
+    .unwrap();
+    for name in ["one", "two"] {
+        fs::create_dir_all(h.join(".check-fixture/worktrees").join(name)).unwrap();
+    }
+    fs::create_dir_all(h.join("agentdisk")).unwrap();
+    fs::write(
+        h.join("agentdisk/config.toml"),
+        format!(
+            "adapters = ['{}']\nmin_free_gb = 1000000\nmax_worktrees = 1\n",
+            adapters.display()
+        ),
+    )
+    .unwrap();
+    h
+}
+
+#[test]
+fn check_uses_configured_adapters_and_thresholds_with_flag_overrides() {
+    let h = configured_check_home("check-config");
+    let (code, out, err) = run(&h, &["check", "--json"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let health = agentdisk_core::json::parse(&out).unwrap();
+    assert_eq!(
+        health
+            .get("agent_worktrees")
+            .unwrap()
+            .get("Check Fixture")
+            .and_then(|v| v.as_u64()),
+        Some(2),
+        "{out}"
+    );
+    let warnings = health.get("warnings").unwrap().as_arr().unwrap();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("2 agent worktrees")),
+        "{out}"
+    );
+    if health.get("free_bytes").unwrap().as_u64().is_some() {
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.as_str().unwrap().contains("Low disk space")),
+            "{out}"
+        );
+    }
+    assert!(err.is_empty(), "{err}");
+
+    let flags = ["check", "--min-free-gb", "0", "--max-worktrees", "2"];
+    let mut args = flags.to_vec();
+    args.push("--json");
+    let (code, out, err) = run(&h, &args);
+    assert_eq!(code, 0, "{out}{err}");
+    let health = agentdisk_core::json::parse(&out).unwrap();
+    assert!(
+        health.get("warnings").unwrap().as_arr().unwrap().is_empty(),
+        "{out}"
+    );
+    args.pop();
+    args.push("--quiet");
+    let (code, out, err) = run(&h, &args);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.is_empty() && err.is_empty(), "{out}{err}");
+    assert_eq!(
+        fs::read_dir(h.join("agentdisk")).unwrap().count(),
+        1,
+        "check must not write"
+    );
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn mcp_check_uses_configured_adapters_and_thresholds() {
+    use std::io::Write;
+    let h = configured_check_home("mcp-check-config");
+    let mut child = bin(&h)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"agentdisk_check","arguments":{}}}"#,
+        "\n"
+    ).as_bytes()).unwrap();
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    let response = agentdisk_core::json::parse(text.lines().last().unwrap()).unwrap();
+    let result = response.get("result").unwrap();
+    assert_ne!(
+        result.get("isError").and_then(|v| v.as_bool()),
+        Some(true),
+        "{text}"
+    );
+    let content = result.get("content").unwrap().as_arr().unwrap()[0]
+        .get("text")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(content.contains("2 agent worktrees"), "{text}");
+    let (_, health, _) = run(&h, &["check", "--json"]);
+    if agentdisk_core::json::parse(&health)
+        .unwrap()
+        .get("free_bytes")
+        .unwrap()
+        .as_u64()
+        .is_some()
+    {
+        assert!(content.contains("Low disk space"), "{text}");
+    }
+    assert_eq!(
+        fs::read_dir(h.join("agentdisk")).unwrap().count(),
+        1,
+        "MCP check must not write"
+    );
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn config_init_includes_check_thresholds() {
+    let h = tmp("check-config-init");
+    let (code, out, err) = run(&h, &["config", "--init"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let config = fs::read_to_string(h.join("agentdisk/config.toml")).unwrap();
+    assert!(config.contains("min_free_gb = 20"), "{config}");
+    assert!(config.contains("max_worktrees = 20"), "{config}");
+    fs::remove_dir_all(&h).unwrap();
+}
+
 #[test]
 fn mcp_invalid_arguments_are_tool_errors_before_planning() {
     use agentdisk_core::json::{self, Value};
