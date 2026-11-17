@@ -616,13 +616,17 @@ fn cmd_compact(rest: &[String]) -> Result<ExitCode, CliError> {
 fn cmd_check(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, &["min-free-gb", "max-worktrees"], &["json", "quiet"])?;
     if a.has("help") {
-        outln!("agentdisk check [--min-free-gb 20] [--max-worktrees 20] [--json] [--quiet]\n\nFast. Prints a warning when space is low or agent worktrees pile up.\nAlways exits 0, so it is safe in hooks. --quiet prints only warnings.")?;
+        outln!("agentdisk check [--min-free-gb 20] [--max-worktrees 20] [--json] [--quiet]\n\nFast. Prints a warning when space is low or agent worktrees pile up.\nLimits default to min_free_gb and max_worktrees in config.toml (both 20 when unset).\nAlways exits 0, so it is safe in hooks. --quiet prints only warnings.")?;
         return Ok(ExitCode::SUCCESS);
     }
     no_positionals(&a, None)?;
+    let cfg = config::load();
+    print_warnings(&cfg);
     let h = check::run(
-        a.num("min-free-gb")?.unwrap_or(20),
-        a.num("max-worktrees")?.unwrap_or(20) as usize,
+        a.num("min-free-gb")?.unwrap_or(cfg.min_free_gb),
+        usize::try_from(a.num("max-worktrees")?.unwrap_or(cfg.max_worktrees as u64))
+            .unwrap_or(usize::MAX),
+        &cfg.adapters,
     );
     if a.has("json") {
         outln!("{}", check::to_json(&h))?;
@@ -753,6 +757,11 @@ fn cmd_config(rest: &[String]) -> Result<ExitCode, CliError> {
         cfg.worktree_days,
         cfg.build_days,
         cfg.max_depth
+    )?;
+    outln!(
+        "min_free_gb = {}, max_worktrees = {}",
+        cfg.min_free_gb,
+        cfg.max_worktrees
     )?;
     Ok(ExitCode::SUCCESS)
 }

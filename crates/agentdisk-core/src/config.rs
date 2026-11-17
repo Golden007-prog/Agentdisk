@@ -5,6 +5,8 @@
 //! worktree_days = 7
 //! build_days = 14
 //! max_depth = 6
+//! min_free_gb = 20
+//! max_worktrees = 20
 //! adapters = ["C:/Users/me/agentdisk-adapters"]
 //! ```
 
@@ -18,6 +20,8 @@ pub struct Config {
     pub worktree_days: u64,
     pub build_days: u64,
     pub max_depth: usize,
+    pub min_free_gb: u64,
+    pub max_worktrees: usize,
     pub adapters: Vec<PathBuf>,
     pub warnings: Vec<String>,
 }
@@ -29,6 +33,8 @@ impl Default for Config {
             worktree_days: 7,
             build_days: 14,
             max_depth: 6,
+            min_free_gb: 20,
+            max_worktrees: 20,
             adapters: Vec::new(),
             warnings: Vec::new(),
         }
@@ -86,13 +92,17 @@ fn parse_config(text: &str) -> Config {
                     "build_days" => {
                         c.build_days = number(v, k, &mut c.warnings).unwrap_or(c.build_days)
                     }
-                    "max_depth" => {
+                    "min_free_gb" => {
+                        c.min_free_gb = number(v, k, &mut c.warnings).unwrap_or(c.min_free_gb)
+                    }
+                    "max_depth" | "max_worktrees" => {
                         if let Some(n) = number(v, k, &mut c.warnings) {
                             match usize::try_from(n) {
-                                Ok(depth) => c.max_depth = depth,
-                                Err(_) => c.warnings.push(
-                                    "config.toml: max_depth is too large for this platform".into(),
-                                ),
+                                Ok(value) if k == "max_depth" => c.max_depth = value,
+                                Ok(value) => c.max_worktrees = value,
+                                Err(_) => c.warnings.push(format!(
+                                    "config.toml: {k} is too large for this platform"
+                                )),
                             }
                         }
                     }
@@ -114,7 +124,11 @@ fn parse_config(text: &str) -> Config {
 fn number(value: &TVal, key: &str, warnings: &mut Vec<String>) -> Option<u64> {
     let number = value.as_int().and_then(|n| u64::try_from(n).ok());
     if number.is_none() {
-        let unit = if key == "max_depth" { "" } else { " of days" };
+        let unit = match key {
+            "worktree_days" | "build_days" => " of days",
+            "min_free_gb" => " of GiB",
+            _ => "",
+        };
         warnings.push(format!(
             "config.toml: {key} must be a whole number{unit} (0 or more)"
         ));
@@ -130,6 +144,9 @@ worktree_days = 7
 build_days = 14
 # How deep to look inside project folders.
 max_depth = 6
+# Warning limits for the fast check (free space in GiB, total agent worktrees).
+min_free_gb = 20
+max_worktrees = 20
 # Extra folders with adapter .toml files.
 adapters = []
 "#;
@@ -147,6 +164,8 @@ adapters = ["adapters"]
 worktree_days = 0
 build_days = 3
 max_depth = 9
+min_free_gb = 0
+max_worktrees = 2
 "#,
         );
         assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
@@ -162,6 +181,7 @@ max_depth = 9
             (cfg.worktree_days, cfg.build_days, cfg.max_depth),
             (0, 3, 9)
         );
+        assert_eq!((cfg.min_free_gb, cfg.max_worktrees), (0, 2));
         let defaults = parse_config(EXAMPLE);
         assert!(defaults.warnings.is_empty());
         assert!(defaults.projects.is_empty() && defaults.adapters.is_empty());
@@ -173,11 +193,18 @@ max_depth = 9
             ),
             (7, 14, 6)
         );
+        assert_eq!((defaults.min_free_gb, defaults.max_worktrees), (20, 20));
     }
 
     #[test]
     fn invalid_config_numbers_warn_and_keep_defaults() {
-        for (key, expected) in [("worktree_days", 7), ("build_days", 14), ("max_depth", 6)] {
+        for (key, expected) in [
+            ("worktree_days", 7),
+            ("build_days", 14),
+            ("max_depth", 6),
+            ("min_free_gb", 20),
+            ("max_worktrees", 20),
+        ] {
             for value in ["-3", "\"soon\"", "true", "[]"] {
                 let cfg = parse_config(&format!("{key} = {value}"));
                 assert_eq!(cfg.warnings.len(), 1, "{key} = {value}: {:?}", cfg.warnings);
@@ -189,6 +216,8 @@ max_depth = 9
                 let actual = match key {
                     "worktree_days" => cfg.worktree_days,
                     "build_days" => cfg.build_days,
+                    "min_free_gb" => cfg.min_free_gb,
+                    "max_worktrees" => cfg.max_worktrees as u64,
                     _ => cfg.max_depth as u64,
                 };
                 assert_eq!(actual, expected);

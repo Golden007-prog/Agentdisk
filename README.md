@@ -77,6 +77,8 @@ On Windows you can run `.\scripts\install.ps1` instead. Check it works: `agentdi
 | `mcp` | MCP server on stdio | No |
 
 Every read command has `--json`. Save your projects folder once with `agentdisk config --init`.
+The fast `check` also uses configured adapter folders and the `min_free_gb` and
+`max_worktrees` warning limits (both default to 20). Its CLI flags override those limits.
 
 ## What is safe to clean
 
