@@ -86,8 +86,8 @@ The fast `check` also uses configured adapter folders and the `min_free_gb` and
 | Kind | Planned when… | Never when… |
 |---|---|---|
 | Agent worktrees | clean, idle 7+ days, unlocked, commits on a branch | uncommitted or untracked files, ignored files that are not build output (like `.env`), locked, main worktree |
-| Build folders (`node_modules`, `.venv`, `target`, `.godot`, Unity `Library`, Unreal `Intermediate`, …) | marker file present, git-ignored, idle 14+ days | tracked by git, its editor is running (Godot, Unity, Unreal), all files shared via hardlinks |
-| Agent logs and caches | marked regenerable, agent not running | — |
+| Build folders ([full list and markers](docs/build-folders.md)) | marker file present, git-ignored, idle for `build_days` (14 days by default) | tracked by git, its editor is running (Godot, Unity, Unreal), all files shared via hardlinks |
+| Agent logs and caches | marked regenerable, idle for `worktree_days` (7 days by default), agent not running | — |
 | Transcripts, checkpoints, memories, settings, models, SDK downloads | — | **always reported, never planned** |
 
 Branches are always kept. Quarantine sits on the same drive, so `apply` is instant.
