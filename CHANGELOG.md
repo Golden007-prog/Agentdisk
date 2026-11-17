@@ -15,6 +15,9 @@
 - `plan` keeps the scan's warnings: a missing or unreadable project folder no longer turns into an apparently clean empty plan. The text says "Nothing to clean, but the scan had warnings." and lists them, and JSON plans have a `warnings` array (`schema_version` stays 1; older saved plans still load). Thanks to @ViktorBystrov72! (#27, #64)
 - `config.toml` warns instead of silently using the default when a known setting has a wrong value (`worktree_days = -3`, `build_days = "soon"`, `projects = 5`), when a folder list has entries that are not text, and when settings sit under a `[section]` header. A single string for `projects` or `adapters` is still read as one folder. Thanks to @ViktorBystrov72! (#29, #65)
 - Dart and Flutter `.dart_tool` folders next to `pubspec.yaml` are recognized as build folders of ecosystem `dart` (rebuild: `dart pub get / flutter pub get`) and planned under the usual rules. Thanks to @ViktorBystrov72! (#28, #69)
+- `check` uses the adapter folders, `min_free_gb` and `max_worktrees` from `config.toml`, so a configured setting is no longer ignored by the fast CLI and MCP checks. An explicit flag still wins, and both limits still default to 20. Thanks to @ViktorBystrov72! (#12, #70)
+- The scan report's summary totals, its JSON summary fields and the 40-row build-folder limit are now covered by tests. Thanks to @dannyward630! (#8, #72)
+- Every build-folder rule and marker is documented in one reference, and a test keeps that page in step with the code. Thanks to @dannyward630! (#6, #74)
 
 ## 0.3.1
 
