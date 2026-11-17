@@ -918,6 +918,162 @@ fn explain_command() {
     fs::remove_dir_all(&h).unwrap();
 }
 
+fn cache_fixture(tag: &str, nested: bool) -> (PathBuf, PathBuf) {
+    let h = tmp(tag);
+    let adapters = h.join("agentdisk/adapters");
+    fs::create_dir_all(&adapters).unwrap();
+    let mut adapter = String::from(
+        r#"id = "cache-fixture"
+name = "Cache Fixture"
+[[path]]
+id = "cache"
+path = "{home}/.cache-fixture/cache"
+class = "regenerable"
+"#,
+    );
+    if nested {
+        adapter.push_str(
+            r#"
+[[path]]
+id = "data"
+path = "{home}/.cache-fixture"
+class = "user-data"
+"#,
+        );
+    }
+    fs::write(adapters.join("cache-fixture.toml"), adapter).unwrap();
+    fs::write(h.join("agentdisk/config.toml"), "worktree_days = 0\n").unwrap();
+    let cache = h.join(".cache-fixture/cache");
+    fs::create_dir_all(&cache).unwrap();
+    (h, cache)
+}
+
+fn cache_explanation_and_plan(
+    h: &PathBuf,
+    cache: &Path,
+) -> (agentdisk_core::json::Value, agentdisk_core::json::Value) {
+    let (code, out, err) = run(h, &["explain", cache.to_str().unwrap(), "--json"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let explanation = agentdisk_core::json::parse(&out).unwrap();
+    assert!(
+        !h.join("agentdisk/plans").exists(),
+        "explain must not write"
+    );
+    let (code, out, err) = run(h, &["plan", "--json"]);
+    assert_eq!(code, 0, "{out}{err}");
+    (explanation, agentdisk_core::json::parse(&out).unwrap())
+}
+
+#[test]
+fn explain_keeps_nested_agent_cache_like_plan() {
+    let (h, cache) = cache_fixture("nested-cache", true);
+    fs::write(cache.join("log"), vec![b'x'; 4096]).unwrap();
+    let (explanation, plan) = cache_explanation_and_plan(&h, &cache);
+    assert!(
+        plan.get("items").unwrap().as_arr().unwrap().is_empty(),
+        "{plan}"
+    );
+    assert!(
+        plan.get("skipped").unwrap().as_arr().unwrap().is_empty(),
+        "nested paths stay excluded: {plan}"
+    );
+    assert_eq!(
+        explanation.get("verdict").unwrap().as_str(),
+        Some("keep"),
+        "{explanation}"
+    );
+    let outer = fs::canonicalize(h.join(".cache-fixture")).unwrap();
+    assert!(
+        explanation
+            .get("reason")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains(&agentdisk_core::paths::display(&outer)),
+        "{explanation}"
+    );
+    assert!(cache.join("log").exists(), "nothing may move");
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn explain_keeps_empty_agent_cache_like_plan() {
+    let (h, cache) = cache_fixture("empty-cache", false);
+    let (explanation, plan) = cache_explanation_and_plan(&h, &cache);
+    assert!(
+        plan.get("items").unwrap().as_arr().unwrap().is_empty(),
+        "{plan}"
+    );
+    let skipped = plan.get("skipped").unwrap().as_arr().unwrap();
+    assert_eq!(skipped.len(), 1, "{plan}");
+    assert_eq!(
+        skipped[0].get("reason").unwrap().as_str(),
+        Some("nothing to free")
+    );
+    assert_eq!(
+        explanation.get("verdict").unwrap().as_str(),
+        Some("keep"),
+        "{explanation}"
+    );
+    assert_eq!(
+        explanation.get("reason").unwrap().as_str(),
+        Some("nothing to free")
+    );
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn explain_keeps_shared_agent_cache_like_plan() {
+    let (h, cache) = cache_fixture("shared-cache", false);
+    let outside = h.join("shared-log");
+    fs::write(&outside, vec![b'x'; 4096]).unwrap();
+    fs::hard_link(&outside, cache.join("log")).unwrap();
+    let (explanation, plan) = cache_explanation_and_plan(&h, &cache);
+    assert_eq!(
+        explanation.get("reclaimable_bytes").unwrap().as_u64(),
+        Some(0)
+    );
+    assert!(
+        plan.get("items").unwrap().as_arr().unwrap().is_empty(),
+        "{plan}"
+    );
+    assert_eq!(
+        explanation.get("verdict").unwrap().as_str(),
+        Some("keep"),
+        "{explanation}"
+    );
+    assert_eq!(
+        explanation.get("reason").unwrap().as_str(),
+        Some("nothing to free")
+    );
+    assert!(outside.exists() && cache.join("log").exists());
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn explain_includes_ordinary_agent_cache_like_plan() {
+    let (h, cache) = cache_fixture("ordinary-cache", false);
+    fs::write(cache.join("log"), vec![b'x'; 4096]).unwrap();
+    let (explanation, plan) = cache_explanation_and_plan(&h, &cache);
+    let items = plan.get("items").unwrap().as_arr().unwrap();
+    assert_eq!(items.len(), 1, "{plan}");
+    assert_eq!(
+        items[0].get("reason").unwrap().as_str(),
+        Some("regenerable cache, idle today")
+    );
+    assert!(
+        plan.get("skipped").unwrap().as_arr().unwrap().is_empty(),
+        "{plan}"
+    );
+    assert_eq!(
+        explanation.get("verdict").unwrap().as_str(),
+        Some("cleanable"),
+        "{explanation}"
+    );
+    assert!(cache.join("log").exists(), "a plan must not move anything");
+    fs::remove_dir_all(&h).unwrap();
+}
+
 #[test]
 fn size_and_explain_with_several_folders() {
     let h = tmp("several");
