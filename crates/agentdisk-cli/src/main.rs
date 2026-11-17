@@ -7,9 +7,55 @@ use agentdisk_core::scan::{self, ScanOptions};
 use agentdisk_core::size::{self, human};
 use agentdisk_core::{adapters, advise, check, compact, config, explain, mcp, VERSION};
 use std::collections::HashMap;
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+#[derive(Debug)]
+enum CliError {
+    Message(String),
+    Output(io::Error),
+}
+
+impl From<String> for CliError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl From<io::Error> for CliError {
+    fn from(error: io::Error) -> Self {
+        Self::Output(error)
+    }
+}
+
+impl std::fmt::Display for CliError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Message(message) => message.fmt(f),
+            Self::Output(error) => error.fmt(f),
+        }
+    }
+}
+
+fn write_stdout(args: std::fmt::Arguments<'_>) -> Result<(), CliError> {
+    let mut stdout = io::stdout().lock();
+    stdout.write_fmt(args)?;
+    stdout.flush()?;
+    Ok(())
+}
+
+macro_rules! out {
+    ($($arg:tt)*) => {
+        write_stdout(format_args!($($arg)*))
+    };
+}
+
+macro_rules! outln {
+    ($($arg:tt)*) => {
+        write_stdout(format_args!("{}\n", format_args!($($arg)*)))
+    };
+}
 
 const HELP: &str = "\
 agentdisk — the honest disk report for AI coding agents
@@ -114,6 +160,17 @@ fn parse(rest: &[String], valued: &[&str], switches: &[&str]) -> Result<Args, St
     Ok(a)
 }
 
+fn no_positionals(a: &Args, hint: Option<&str>) -> Result<(), String> {
+    if let Some(arg) = a.pos.first() {
+        let mut message = format!("unexpected argument '{arg}'");
+        if let Some(flag) = hint {
+            message.push_str(&format!(". Did you mean `{flag} {arg}`?"));
+        }
+        return Err(message);
+    }
+    Ok(())
+}
+
 fn scan_options(a: &Args, cfg: &config::Config) -> Result<ScanOptions, String> {
     let mut projects: Vec<PathBuf> = a.many("projects").into_iter().map(PathBuf::from).collect();
     if projects.is_empty() {
@@ -159,27 +216,28 @@ fn human_confirms(what: &str, code: &str) -> Result<bool, String> {
     Ok(line.trim() == code)
 }
 
-fn cmd_scan(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_scan(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, SCAN_FLAGS, &["json", "no-agents"])?;
     if a.has("help") {
-        println!("agentdisk scan [-p <dir>]... [--json] [--depth N] [--threads N] [--adapters <dir>] [--no-agents]\n\nRead-only report of agent data, worktrees and dependency/build folders.\nWithout -p it scans agent folders only (plus `projects` from config).");
+        outln!("agentdisk scan [-p <dir>]... [--json] [--depth N] [--threads N] [--adapters <dir>] [--no-agents]\n\nRead-only report of agent data, worktrees and dependency/build folders.\nWithout -p it scans agent folders only (plus `projects` from config).")?;
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, Some("-p"))?;
     let cfg = config::load();
     print_warnings(&cfg);
     let r = scan::run(&scan_options(&a, &cfg)?);
     if a.has("json") {
-        println!("{}", scan::to_json(&r).pretty());
+        outln!("{}", scan::to_json(&r).pretty())?;
     } else {
-        print!("{}", scan::render(&r));
+        out!("{}", scan::render(&r))?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_explain(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_explain(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, &[], &["json"])?;
     if a.has("help") || a.pos.is_empty() {
-        println!("agentdisk explain <dir>... [--json]\n\nRead-only. Says what a folder is (agent data, worktree, build folder),\nwho made it, and whether `agentdisk plan` would clean it, and why.\n\nSeveral folders: --json prints one array in the order given. A folder that\ncannot be read is reported ({{\"path\", \"error\"}} in JSON, stderr in text), the\nrest still run, and the exit code is 1.");
+        outln!("agentdisk explain <dir>... [--json]\n\nRead-only. Says what a folder is (agent data, worktree, build folder),\nwho made it, and whether `agentdisk plan` would clean it, and why.\n\nSeveral folders: --json prints one array in the order given. A folder that\ncannot be read is reported ({{\"path\", \"error\"}} in JSON, stderr in text), the\nrest still run, and the exit code is 1.")?;
         return Ok(if a.pos.is_empty() && !a.has("help") {
             ExitCode::from(2)
         } else {
@@ -200,14 +258,14 @@ fn cmd_explain(rest: &[String]) -> Result<ExitCode, String> {
 fn each_folder(
     a: &Args,
     one: impl Fn(&str) -> Result<(Value, String), String>,
-) -> Result<ExitCode, String> {
+) -> Result<ExitCode, CliError> {
     let json = a.has("json");
     if let [p] = a.pos.as_slice() {
         let (v, text) = one(p)?;
         if json {
-            println!("{v}");
+            outln!("{v}")?;
         } else {
-            print!("{text}");
+            out!("{text}")?;
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -215,7 +273,7 @@ fn each_folder(
     for p in &a.pos {
         match one(p) {
             Ok((v, _)) if json => all.push(v),
-            Ok((_, text)) => print!("{text}"),
+            Ok((_, text)) => out!("{text}")?,
             Err(e) => {
                 failed = true;
                 if json {
@@ -230,15 +288,15 @@ fn each_folder(
         }
     }
     if json {
-        println!("{}", Value::Arr(all));
+        outln!("{}", Value::Arr(all))?;
     }
     Ok(ExitCode::from(failed as u8))
 }
 
-fn cmd_size(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_size(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, &["threads"], &["json"])?;
     if a.has("help") || a.pos.is_empty() {
-        println!("agentdisk size <dir>... [--json] [--threads N]\n\nMeasure folders. Read-only. Symlinks and junctions are not followed;\nhardlinked files are counted once.\n\nSeveral folders: --json prints one array in the order given. A folder that\ncannot be read is reported ({{\"path\", \"error\"}} in JSON, stderr in text), the\nrest still run, and the exit code is 1.");
+        outln!("agentdisk size <dir>... [--json] [--threads N]\n\nMeasure folders. Read-only. Symlinks and junctions are not followed;\nhardlinked files are counted once.\n\nSeveral folders: --json prints one array in the order given. A folder that\ncannot be read is reported ({{\"path\", \"error\"}} in JSON, stderr in text), the\nrest still run, and the exit code is 1.")?;
         return Ok(if a.pos.is_empty() && !a.has("help") {
             ExitCode::from(2)
         } else {
@@ -287,25 +345,26 @@ fn cmd_size(rest: &[String]) -> Result<ExitCode, String> {
     })
 }
 
-fn cmd_advise(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_advise(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, SCAN_FLAGS, &["json", "no-agents"])?;
     if a.has("help") {
-        println!("agentdisk advise [-p <dir>]... [--json] [--depth N] [--threads N]\n                 [--adapters <dir>] [--no-agents]\n\nSuggestions only; agentdisk never runs them.");
+        outln!("agentdisk advise [-p <dir>]... [--json] [--depth N] [--threads N]\n                 [--adapters <dir>] [--no-agents]\n\nSuggestions only; agentdisk never runs them.")?;
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, Some("-p"))?;
     let cfg = config::load();
     print_warnings(&cfg);
     let r = scan::run(&scan_options(&a, &cfg)?);
     let list = advise::advise(&r);
     if a.has("json") {
-        println!("{}", advise::to_json(&list).pretty());
+        outln!("{}", advise::to_json(&list).pretty())?;
     } else {
-        print!("{}", advise::render(&list));
+        out!("{}", advise::render(&list))?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_plan(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_plan(rest: &[String]) -> Result<ExitCode, CliError> {
     let mut valued = SCAN_FLAGS.to_vec();
     valued.extend(["worktree-days", "build-days"]);
     let a = parse(
@@ -320,9 +379,10 @@ fn cmd_plan(rest: &[String]) -> Result<ExitCode, String> {
         ],
     )?;
     if a.has("help") {
-        println!("agentdisk plan [-p <dir>]... [--worktree-days N] [--build-days N]\n                [--no-worktrees] [--no-build] [--no-agent-caches] [--json]\n                [--depth N] [--threads N] [--adapters <dir>] [--no-agents]\n\nMakes and saves a cleanup plan. Moves nothing. A person applies it with\n`agentdisk apply <id>` in a terminal.");
+        outln!("agentdisk plan [-p <dir>]... [--worktree-days N] [--build-days N]\n                [--no-worktrees] [--no-build] [--no-agent-caches] [--json]\n                [--depth N] [--threads N] [--adapters <dir>] [--no-agents]\n\nMakes and saves a cleanup plan. Moves nothing. A person applies it with\n`agentdisk apply <id>` in a terminal.")?;
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, Some("-p"))?;
     let cfg = config::load();
     print_warnings(&cfg);
     let opts = PlanOptions {
@@ -336,32 +396,33 @@ fn cmd_plan(rest: &[String]) -> Result<ExitCode, String> {
     let (plan, _) = cleanup::plan_now(&opts);
     let path = cleanup::save(&plan).map_err(|e| format!("could not save plan: {e}"))?;
     if a.has("json") {
-        println!("{}", cleanup::plan_to_json(&plan).pretty());
+        outln!("{}", cleanup::plan_to_json(&plan).pretty())?;
     } else {
-        print!("{}", cleanup::render_plan(&plan, Some(&path)));
+        out!("{}", cleanup::render_plan(&plan, Some(&path)))?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_plans(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_plans(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, &[], &["json"])?;
     if a.has("help") {
-        println!("agentdisk plans [--json]\n\nRead-only. Lists the saved cleanup plans, newest first, with what each\nwould free and whether it was applied.");
+        outln!("agentdisk plans [--json]\n\nRead-only. Lists the saved cleanup plans, newest first, with what each\nwould free and whether it was applied.")?;
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, None)?;
     let list = cleanup::list_plans();
     if a.has("json") {
-        println!("{}", cleanup::plans_to_json(&list).pretty());
+        outln!("{}", cleanup::plans_to_json(&list).pretty())?;
     } else {
-        print!("{}", cleanup::render_plans(&list));
+        out!("{}", cleanup::render_plans(&list))?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_apply(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_apply(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, &[], &["dry-run"])?;
     if a.has("help") || a.pos.is_empty() {
-        println!("agentdisk apply <plan-id|latest> [--dry-run]\n\nRe-checks every item, then moves it to quarantine. Nothing is deleted.\nMust be run by a person in an interactive terminal.");
+        outln!("agentdisk apply <plan-id|latest> [--dry-run]\n\nRe-checks every item, then moves it to quarantine. Nothing is deleted.\nMust be run by a person in an interactive terminal.")?;
         return Ok(if a.pos.is_empty() && !a.has("help") {
             ExitCode::from(2)
         } else {
@@ -370,60 +431,60 @@ fn cmd_apply(rest: &[String]) -> Result<ExitCode, String> {
     }
     let plan = cleanup::load(&a.pos[0])?;
     if plan.items.is_empty() {
-        println!("Plan {} has nothing to apply.", plan.id);
+        outln!("Plan {} has nothing to apply.", plan.id)?;
         return Ok(ExitCode::SUCCESS);
     }
     let dry = a.has("dry-run");
     if !dry {
-        println!(
+        outln!(
             "Plan {}: {} item(s), up to {}.",
             plan.id,
             plan.items.len(),
             human(plan.total())
-        );
+        )?;
         for i in &plan.items {
-            println!(
+            outln!(
                 "  {:>10}  {}  {}",
                 human(i.bytes),
                 i.label,
                 display(&i.path)
-            );
+            )?;
         }
-        println!(
+        outln!(
             "Items are moved to quarantine, not deleted. `agentdisk restore {}` undoes it.",
             plan.id
-        );
+        )?;
         if !human_confirms("moving these items to quarantine", &plan.code())? {
-            println!("Cancelled. Nothing changed.");
+            outln!("Cancelled. Nothing changed.")?;
             return Ok(ExitCode::SUCCESS);
         }
     }
     let out = cleanup::apply(&plan, dry);
     let verb = if dry { "Would move" } else { "Moved" };
     let total: u64 = out.moved.iter().map(|m| m.bytes).sum();
-    println!("{verb} {} item(s), {}:", out.moved.len(), human(total));
+    outln!("{verb} {} item(s), {}:", out.moved.len(), human(total))?;
     for m in &out.moved {
-        println!("  {}  →  {}", display(&m.original), display(&m.quarantine));
+        outln!("  {}  →  {}", display(&m.original), display(&m.quarantine))?;
     }
     if !out.skipped.is_empty() {
-        println!("Skipped {} item(s):", out.skipped.len());
+        outln!("Skipped {} item(s):", out.skipped.len())?;
         for (p, why) in &out.skipped {
-            println!("  {}: {why}", display(p));
+            outln!("  {}: {why}", display(p))?;
         }
     }
     if !dry && !out.moved.is_empty() {
-        println!(
+        outln!(
             "\nSpace is freed for good after `agentdisk purge` (items older than 7 days).\nUndo now: agentdisk restore {}",
             plan.id
-        );
+        )?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_restore(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_restore(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, &[], &[])?;
     if a.has("help") || a.pos.is_empty() {
-        println!("agentdisk restore <plan-id>\n\nMoves a plan's quarantined items back to where they were.");
+        outln!("agentdisk restore <plan-id>\n\nMoves a plan's quarantined items back to where they were.")?;
         return Ok(if a.pos.is_empty() && !a.has("help") {
             ExitCode::from(2)
         } else {
@@ -432,9 +493,9 @@ fn cmd_restore(rest: &[String]) -> Result<ExitCode, String> {
     }
     cleanup::check_plan_id(&a.pos[0])?;
     let (done, problems) = cleanup::restore(&a.pos[0]);
-    println!("Restored {} item(s).", done.len());
+    outln!("Restored {} item(s).", done.len())?;
     for d in &done {
-        println!("  {}", display(&d.original));
+        outln!("  {}", display(&d.original))?;
     }
     for p in &problems {
         eprintln!("  problem: {p}");
@@ -446,14 +507,15 @@ fn cmd_restore(rest: &[String]) -> Result<ExitCode, String> {
     })
 }
 
-fn cmd_purge(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_purge(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, &["older-than", "plan"], &["dry-run"])?;
     if a.has("help") {
-        println!("agentdisk purge [--older-than DAYS (default 7)] [--plan <id>] [--dry-run]\n\nDeletes quarantined items for good. Must be run by a person in a terminal.");
+        outln!("agentdisk purge [--older-than DAYS (default 7)] [--plan <id>] [--dry-run]\n\nDeletes quarantined items for good. Must be run by a person in a terminal.")?;
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, Some("--plan"))?;
     let days = a.num("older-than")?.unwrap_or(7);
-    let (list, refused) = cleanup::purge_candidates(a.one("plan"), days)?;
+    let (list, refused, quarantined) = cleanup::purge_candidates(a.one("plan"), days)?;
     let status = |problems: bool| {
         if problems {
             ExitCode::from(1)
@@ -466,47 +528,54 @@ fn cmd_purge(rest: &[String]) -> Result<ExitCode, String> {
     }
     if list.is_empty() {
         if refused.is_empty() {
-            println!("Nothing in quarantine is older than {days} day(s).");
+            match a.one("plan") {
+                Some(plan) if quarantined == 0 => {
+                    outln!("Nothing in quarantine for plan '{plan}'. See the plans with: agentdisk quarantine")?;
+                    return Ok(ExitCode::from(1));
+                }
+                Some(plan) => outln!("Plan {plan} has {quarantined} item(s) in quarantine, none older than {days} day(s). Use --older-than 0 to delete them now.")?,
+                None => outln!("Nothing in quarantine is older than {days} day(s).")?,
+            }
         } else {
-            println!("Nothing was deleted.");
+            outln!("Nothing was deleted.")?;
         }
         return Ok(status(!refused.is_empty()));
     }
     let total: u64 = list.iter().map(|(_, e)| e.bytes).sum();
-    println!(
+    outln!(
         "{} item(s), {}, will be deleted for good:",
         list.len(),
         human(total)
-    );
+    )?;
     for (_, e) in &list {
-        println!(
+        outln!(
             "  {}  (was {})",
             display(&e.quarantine),
             display(&e.original)
-        );
+        )?;
     }
     if a.has("dry-run") {
         return Ok(status(!refused.is_empty()));
     }
     if !human_confirms("permanent deletion", "delete")? {
-        println!("Cancelled. Nothing changed.");
+        outln!("Cancelled. Nothing changed.")?;
         return Ok(ExitCode::SUCCESS);
     }
     let (freed, problems) = cleanup::purge(&list);
-    println!("Freed {}.", human(freed));
+    outln!("Freed {}.", human(freed))?;
     for p in &problems {
         eprintln!("  problem: {p}");
     }
     Ok(status(!problems.is_empty() || !refused.is_empty()))
 }
 
-fn cmd_compact(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_compact(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, &["algo"], &["undo", "dry-run"])?;
     if a.has("help") || a.pos.is_empty() {
-        println!(
+        outln!(
             "agentdisk compact <dir> [--algo xpress4k|xpress8k|xpress16k|lzx] [--undo] [--dry-run]\n\nTransparent compression for folders that are mostly read (SDKs, engine installs,\nold projects). Expect 1.3-2x. Refuses .git, node_modules, .venv, .godot,\nshared package stores and folders changed in the last {} days.",
             compact::MIN_IDLE_DAYS
-        );
+        )?;
         return Ok(if a.pos.is_empty() && !a.has("help") {
             ExitCode::from(2)
         } else {
@@ -518,55 +587,62 @@ fn cmd_compact(rest: &[String]) -> Result<ExitCode, String> {
         return Err(format!(
             "unknown --algo '{algo}' (use {})",
             compact::ALGORITHMS.join(", ")
-        ));
+        )
+        .into());
     }
     let undo = a.has("undo");
     let c = compact::check(Path::new(&a.pos[0]))?;
-    println!(
+    outln!(
         "{}: {} on disk",
         display(&c.path),
         human(c.before.allocated_bytes)
-    );
-    println!("Command: {}", compact::command(&c.path, algo, undo));
+    )?;
+    outln!("Command: {}", compact::command(&c.path, algo, undo))?;
     if a.has("dry-run") || !cfg!(windows) {
         if !cfg!(windows) {
-            println!("agentdisk runs compression only on Windows; run the command above yourself.");
+            outln!("agentdisk runs compression only on Windows; run the command above yourself.")?;
         }
         return Ok(ExitCode::SUCCESS);
     }
     if !human_confirms(if undo { "decompression" } else { "compression" }, "yes")? {
-        println!("Cancelled. Nothing changed.");
+        outln!("Cancelled. Nothing changed.")?;
         return Ok(ExitCode::SUCCESS);
     }
     let after = compact::run(&c, algo, undo)?;
-    print!("{}", compact::report(&c.before, &after));
+    out!("{}", compact::report(&c.before, &after))?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_check(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_check(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, &["min-free-gb", "max-worktrees"], &["json", "quiet"])?;
     if a.has("help") {
-        println!("agentdisk check [--min-free-gb 20] [--max-worktrees 20] [--json] [--quiet]\n\nFast. Prints a warning when space is low or agent worktrees pile up.\nAlways exits 0, so it is safe in hooks. --quiet prints only warnings.");
+        outln!("agentdisk check [--min-free-gb 20] [--max-worktrees 20] [--json] [--quiet]\n\nFast. Prints a warning when space is low or agent worktrees pile up.\nLimits default to min_free_gb and max_worktrees in config.toml (both 20 when unset).\nAlways exits 0, so it is safe in hooks. --quiet prints only warnings.")?;
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, None)?;
+    let cfg = config::load();
+    print_warnings(&cfg);
     let h = check::run(
-        a.num("min-free-gb")?.unwrap_or(20),
-        a.num("max-worktrees")?.unwrap_or(20) as usize,
+        a.num("min-free-gb")?.unwrap_or(cfg.min_free_gb),
+        usize::try_from(a.num("max-worktrees")?.unwrap_or(cfg.max_worktrees as u64))
+            .unwrap_or(usize::MAX),
+        &cfg.adapters,
     );
     if a.has("json") {
-        println!("{}", check::to_json(&h));
+        outln!("{}", check::to_json(&h))?;
     } else if !(a.has("quiet") && h.warnings.is_empty()) {
-        print!("{}", check::render(&h));
+        out!("{}", check::render(&h))?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_adapters(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_adapters(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, &["adapters"], &["json"])?;
     if a.has("help") {
-        println!("agentdisk adapters [--adapters <dir>]... [--json]\n\nList known agents and their data locations.");
+        outln!("agentdisk adapters [--adapters <dir>]... [--json]\n\nList known agents and their data locations.")?;
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, None)?;
     let cfg = config::load();
     let mut dirs = cfg.adapters.clone();
     dirs.extend(a.many("adapters").into_iter().map(PathBuf::from));
@@ -607,64 +683,65 @@ fn cmd_adapters(rest: &[String]) -> Result<ExitCode, String> {
                 ])
             })
             .collect();
-        println!("{}", Value::Arr(v).pretty());
+        outln!("{}", Value::Arr(v).pretty())?;
         return Ok(ExitCode::SUCCESS);
     }
-    println!(
+    outln!(
         "Agents agentdisk knows ({}). ✓ = found on this computer.\n",
         list.len()
-    );
+    )?;
     for ad in &list {
         let found: Vec<&adapters::PathEntry> = ad
             .paths
             .iter()
             .filter(|p| p.applies_here() && !agentdisk_core::paths::expand(&p.template).is_empty())
             .collect();
-        println!(
+        outln!(
             "{} {} — {} [{}]",
             if found.is_empty() { " " } else { "✓" },
             ad.name,
             ad.vendor,
             ad.verified.as_deref().unwrap_or("unverified")
-        );
+        )?;
         for p in ad.paths.iter().filter(|p| p.applies_here()) {
             let here = found.iter().any(|f| f.id == p.id);
-            println!(
+            outln!(
                 "    {} {:<20} {:<12} {}{}",
                 if here { "✓" } else { "·" },
                 p.id,
                 p.class.as_str(),
                 p.template,
                 if p.documented { "" } else { "  (undocumented)" }
-            );
+            )?;
         }
     }
-    println!(
+    outln!(
         "\nAdd an agent: put a .toml file in {}",
         display(&agentdisk_core::paths::config_dir().join("adapters"))
-    );
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_config(rest: &[String]) -> Result<ExitCode, String> {
+fn cmd_config(rest: &[String]) -> Result<ExitCode, CliError> {
     let a = parse(rest, &[], &["init"])?;
     if a.has("help") {
-        println!("agentdisk config [--init]\n\nShow configuration paths and settings. --init writes an example file.");
+        outln!("agentdisk config [--init]\n\nShow configuration paths and settings. --init writes an example file.")?;
         return Ok(ExitCode::SUCCESS);
     }
+    no_positionals(&a, None)?;
     let path = config::path();
     if a.has("init") {
         if path.exists() {
-            return Err(format!("{} already exists", display(&path)));
+            return Err(format!("{} already exists", display(&path)).into());
         }
         if let Some(p) = path.parent() {
             std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
         }
         std::fs::write(&path, config::EXAMPLE).map_err(|e| e.to_string())?;
-        println!("Wrote {}", display(&path));
+        outln!("Wrote {}", display(&path))?;
         return Ok(ExitCode::SUCCESS);
     }
-    println!(
+    outln!(
         "Config file: {}{}",
         display(&path),
         if path.exists() {
@@ -672,37 +749,44 @@ fn cmd_config(rest: &[String]) -> Result<ExitCode, String> {
         } else {
             " (not created yet; use --init)"
         }
-    );
-    println!(
+    )?;
+    outln!(
         "Data folder: {}",
         display(&agentdisk_core::paths::data_dir())
-    );
+    )?;
     let cfg = config::load();
     print_warnings(&cfg);
-    println!(
+    outln!(
         "projects: {:?}",
         cfg.projects.iter().map(|p| display(p)).collect::<Vec<_>>()
-    );
-    println!(
+    )?;
+    outln!(
         "worktree_days = {}, build_days = {}, max_depth = {}",
-        cfg.worktree_days, cfg.build_days, cfg.max_depth
-    );
+        cfg.worktree_days,
+        cfg.build_days,
+        cfg.max_depth
+    )?;
+    outln!(
+        "min_free_gb = {}, max_worktrees = {}",
+        cfg.min_free_gb,
+        cfg.max_worktrees
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn run(args: &[String]) -> Result<ExitCode, String> {
+fn run(args: &[String]) -> Result<ExitCode, CliError> {
     let Some(cmd) = args.first() else {
-        println!("{HELP}");
+        outln!("{HELP}")?;
         return Ok(ExitCode::SUCCESS);
     };
     let rest = &args[1..];
     match cmd.as_str() {
         "-h" | "--help" | "help" => {
-            println!("{HELP}");
+            outln!("{HELP}")?;
             Ok(ExitCode::SUCCESS)
         }
         "-V" | "--version" | "version" => {
-            println!("agentdisk {VERSION}");
+            outln!("agentdisk {VERSION}")?;
             Ok(ExitCode::SUCCESS)
         }
         "scan" => cmd_scan(rest),
@@ -715,7 +799,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         "restore" => cmd_restore(rest),
         "purge" => cmd_purge(rest),
         "quarantine" => {
-            print!("{}", cleanup::render_quarantine());
+            out!("{}", cleanup::render_quarantine())?;
             Ok(ExitCode::SUCCESS)
         }
         "compact" => cmd_compact(rest),
@@ -725,15 +809,14 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         "mcp" => {
             let a = parse(rest, &[], &[])?;
             if a.has("help") {
-                println!("agentdisk mcp\n\nRun the MCP server on standard input and output.");
-            } else {
-                mcp::serve().map_err(|e| e.to_string())?;
+                outln!("agentdisk mcp\n\nRun the MCP server on standard input and output.")?;
+                return Ok(ExitCode::SUCCESS);
             }
+            no_positionals(&a, None)?;
+            mcp::serve()?;
             Ok(ExitCode::SUCCESS)
         }
-        other => Err(format!(
-            "unknown command '{other}'. Run `agentdisk --help`."
-        )),
+        other => Err(format!("unknown command '{other}'. Run `agentdisk --help`.").into()),
     }
 }
 
@@ -741,6 +824,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
         Ok(code) => code,
+        Err(CliError::Output(e)) if e.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::from(2)

@@ -106,7 +106,7 @@ pub fn tools() -> Value {
         tool(
             "agentdisk_check",
             "Quick disk check",
-            "Fast check of free space and number of agent worktrees. Use it before starting work that creates worktrees or large builds.",
+            "Fast check of free space and number of agent worktrees. Uses adapter folders and warning limits from config.toml. Use it before starting work that creates worktrees or large builds.",
             vec![],
             true,
         ),
@@ -208,7 +208,11 @@ pub fn call(name: &str, args: &Value) -> Result<String, String> {
             Ok(cleanup::render_plan(&plan, Some(&path))
                 + "\nNOTE FOR THE AGENT: you cannot apply this plan. Show the user the command above; they run it themselves.\n")
         }
-        "agentdisk_check" => Ok(check::render(&check::run(20, 20))),
+        "agentdisk_check" => Ok(check::render(&check::run(
+            cfg.min_free_gb,
+            cfg.max_worktrees,
+            &cfg.adapters,
+        ))),
         "agentdisk_quarantine" => Ok(cleanup::render_quarantine()),
         other => Err(format!("unknown tool '{other}'")),
     }

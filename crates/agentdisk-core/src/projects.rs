@@ -92,6 +92,13 @@ pub const RULES: &[EcoRule] = &[
         rebuild: "cargo build",
     },
     EcoRule {
+        dir: ".dart_tool",
+        ecosystem: "dart",
+        markers: &["pubspec.yaml"],
+        editor: None,
+        rebuild: "dart pub get / flutter pub get",
+    },
+    EcoRule {
         dir: ".godot",
         ecosystem: "godot",
         markers: &["project.godot"],
@@ -344,6 +351,11 @@ mod tests {
         fs::create_dir_all(unity.join("Library")).unwrap();
         fs::create_dir_all(unity.join("ProjectSettings")).unwrap();
         fs::write(unity.join("ProjectSettings/ProjectVersion.txt"), "").unwrap();
+        let dart = root.join("dart");
+        fs::create_dir_all(dart.join(".dart_tool/cache")).unwrap();
+        fs::write(dart.join("pubspec.yaml"), "name: fixture\n").unwrap();
+        let unmarked_dart = root.join("notes/.dart_tool");
+        fs::create_dir_all(&unmarked_dart).unwrap();
         fs::create_dir_all(root.join("repo/.git")).unwrap();
         fs::create_dir_all(root.join("wt")).unwrap();
         fs::write(root.join("wt/.git"), "gitdir: /x").unwrap();
@@ -354,6 +366,21 @@ mod tests {
         assert!(kinds.contains(&".godot"));
         assert!(kinds.contains(&"Intermediate"));
         assert!(kinds.contains(&"Library"));
+        let dart_paths: Vec<_> = scan
+            .eco
+            .iter()
+            .filter(|e| e.rule.dir == ".dart_tool")
+            .map(|e| &e.path)
+            .collect();
+        assert_eq!(
+            dart_paths,
+            vec![&crate::paths::canon(&dart.join(".dart_tool"))]
+        );
+        let dart_rule = rule_for(&dart.join(".dart_tool")).unwrap();
+        assert_eq!(dart_rule.ecosystem, "dart");
+        assert_eq!(dart_rule.rebuild, "dart pub get / flutter pub get");
+        assert_eq!(dart_rule.editor, None);
+        assert!(rule_for(&unmarked_dart).is_none());
         assert!(
             !kinds.contains(&"target"),
             "target without Cargo.toml must be ignored"
@@ -363,5 +390,27 @@ mod tests {
         assert!(rule_for(&crate::paths::canon(&web.join("node_modules"))).is_some());
         assert!(rule_for(&root.join("notes/target")).is_none());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn build_folder_docs_cover_every_rule_and_marker() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/build-folders.md");
+        let docs = fs::read_to_string(path).expect("build-folder documentation");
+
+        for rule in RULES {
+            let row_prefix = format!("| `{}` |", rule.dir);
+            let row = docs
+                .lines()
+                .find(|line| line.starts_with(&row_prefix))
+                .unwrap_or_else(|| panic!("docs/build-folders.md is missing `{}`", rule.dir));
+
+            for marker in rule.markers {
+                assert!(
+                    row.contains(&format!("`{marker}`")),
+                    "docs/build-folders.md is missing marker `{marker}` for `{}`",
+                    rule.dir
+                );
+            }
+        }
     }
 }

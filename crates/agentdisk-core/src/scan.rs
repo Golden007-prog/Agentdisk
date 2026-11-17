@@ -189,12 +189,14 @@ pub fn run(opts: &ScanOptions) -> Report {
     let mut roots: Vec<PathBuf> = opts
         .projects
         .iter()
-        .filter(|p| p.exists())
+        .filter(|p| p.is_dir())
         .cloned()
         .collect();
     for p in &opts.projects {
         if !p.exists() {
             warnings.push(format!("project folder not found: {}", display(p)));
+        } else if !p.is_dir() {
+            warnings.push(format!("project path is not a folder: {}", display(p)));
         }
     }
     roots.extend(adapter_worktree_dirs.iter().cloned());
@@ -674,4 +676,132 @@ pub fn to_json(r: &Report) -> Value {
                 .into(),
         ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn totals(allocated_bytes: u64, reclaimable_bytes: u64) -> Totals {
+        Totals {
+            allocated_bytes,
+            reclaimable_bytes,
+            ..Totals::default()
+        }
+    }
+
+    fn agent(class: Class, allocated_bytes: u64, nested: bool) -> AgentItem {
+        AgentItem {
+            adapter: "codex".into(),
+            agent: "Codex".into(),
+            what: "fixture".into(),
+            path: PathBuf::from("fixture/agent"),
+            class,
+            documented: true,
+            note: None,
+            totals: totals(allocated_bytes, 0),
+            nested,
+        }
+    }
+
+    fn worktree(allocated_bytes: u64, reclaimable_bytes: u64) -> WorktreeItem {
+        WorktreeItem {
+            path: PathBuf::from("fixture/worktree"),
+            repo: None,
+            agent: "codex".into(),
+            head: None,
+            branch: None,
+            locked: false,
+            prunable: false,
+            orphan: false,
+            dirty: None,
+            lockfile: None,
+            totals: totals(allocated_bytes, reclaimable_bytes),
+        }
+    }
+
+    fn eco(worktree: Option<PathBuf>, allocated_bytes: u64, reclaimable_bytes: u64) -> EcoItem {
+        EcoItem {
+            path: PathBuf::from("fixture/project/node_modules"),
+            rule: &crate::projects::RULES[0],
+            project: PathBuf::from("fixture/project"),
+            worktree,
+            totals: totals(allocated_bytes, reclaimable_bytes),
+        }
+    }
+
+    fn summary_report() -> Report {
+        Report {
+            agents: vec![
+                agent(Class::UserData, 100, false),
+                agent(Class::Regenerable, 200, false),
+                agent(Class::Protected, 10, false),
+                agent(Class::Model, 20, false),
+                agent(Class::Download, 30, false),
+                agent(Class::UserData, 1_000, true),
+            ],
+            worktrees: vec![worktree(400, 40), worktree(500, 50)],
+            eco: vec![
+                eco(None, 600, 60),
+                eco(Some(PathBuf::from("fixture/worktree")), 700, 70),
+            ],
+            ..Report::default()
+        }
+    }
+
+    #[test]
+    fn summary_excludes_nested_data_and_worktree_build_folders() {
+        let s = summary(&summary_report());
+
+        assert_eq!(s.agent_user, 100);
+        assert_eq!(s.agent_regen, 200);
+        assert_eq!(s.agent_other, 60);
+        assert_eq!(s.worktrees, 900);
+        assert_eq!(s.worktree_reclaim, 90);
+        assert_eq!(s.eco_outside, 600);
+        assert_eq!(s.eco_outside_reclaim, 60);
+    }
+
+    #[test]
+    fn json_summary_matches_the_report_summary() {
+        let json = to_json(&summary_report());
+        let summary_json = json.get("summary").expect("summary object");
+
+        for (field, expected) in [
+            ("agent_user_data_bytes", 100),
+            ("agent_regenerable_bytes", 200),
+            ("agent_other_bytes", 60),
+            ("worktree_bytes", 900),
+            ("worktree_reclaimable_bytes", 90),
+            ("project_build_bytes", 600),
+            ("project_build_reclaimable_bytes", 60),
+        ] {
+            assert_eq!(
+                summary_json.get(field).and_then(Value::as_u64),
+                Some(expected),
+                "unexpected JSON summary field {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_reports_build_folders_beyond_the_table_limit() {
+        let report = Report {
+            eco: (0..45)
+                .map(|n| EcoItem {
+                    path: PathBuf::from(format!("fixture/project-{n}/node_modules")),
+                    rule: &crate::projects::RULES[0],
+                    project: PathBuf::from(format!("fixture/project-{n}")),
+                    worktree: None,
+                    totals: Totals::default(),
+                })
+                .collect(),
+            ..Report::default()
+        };
+
+        let output = render(&report);
+
+        assert!(output.contains("DEPENDENCY & BUILD FOLDERS (45)"));
+        assert!(output.contains("… and 5 more (use --json for all)"));
+    }
 }

@@ -6,6 +6,7 @@ use crate::paths;
 use crate::scan;
 use crate::size::human;
 use crate::sys;
+use std::path::PathBuf;
 
 #[derive(Debug)]
 pub struct Health {
@@ -15,8 +16,8 @@ pub struct Health {
     pub warnings: Vec<String>,
 }
 
-pub fn run(min_free_gb: u64, max_worktrees: usize) -> Health {
-    let (adapters, _) = scan::load_adapters(&[]);
+pub fn run(min_free_gb: u64, max_worktrees: usize, adapter_dirs: &[PathBuf]) -> Health {
+    let (adapters, _) = scan::load_adapters(adapter_dirs);
     let disk = sys::disk_space(&paths::home());
     let mut per_agent = Vec::new();
     for a in &adapters {

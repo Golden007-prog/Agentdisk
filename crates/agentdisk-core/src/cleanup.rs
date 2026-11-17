@@ -25,7 +25,7 @@ use crate::json::{self, Value};
 use crate::paths::{self, display};
 use crate::projects;
 use crate::scan::{self, Report, ScanOptions, WorktreeItem};
-use crate::size::{self, human};
+use crate::size::{self, human, Totals};
 use crate::sys;
 use crate::util::{self, table};
 use std::collections::HashSet;
@@ -85,6 +85,7 @@ pub struct Plan {
     pub items: Vec<PlanItem>,
     pub skipped: Vec<Skipped>,
     pub hints: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 impl Plan {
@@ -322,6 +323,35 @@ fn check_agent_cache(
     Ok(())
 }
 
+/// Shared cache eligibility for planning and explanations. Returns idle days.
+pub(crate) fn agent_cache_eligibility(
+    totals: &Totals,
+    now: u64,
+    min_days: u64,
+    agent_name: &str,
+    running: bool,
+    outer: Option<&Path>,
+) -> Result<u64, String> {
+    if let Some(outer) = outer {
+        return Err(format!("inside another agent folder: {}", display(outer)));
+    }
+    if running {
+        return Err(format!("{agent_name} is running"));
+    }
+    let idle = totals.idle_days(now).unwrap_or(0);
+    if idle < min_days {
+        return Err(format!(
+            "changed {} — needs {}+ days idle",
+            util::age(Some(idle)),
+            min_days
+        ));
+    }
+    if totals.reclaimable_bytes == 0 {
+        return Err("nothing to free".into());
+    }
+    Ok(idle)
+}
+
 pub fn make_plan(report: &Report, opts: &PlanOptions) -> Plan {
     let now = report.generated;
     let procs = sys::process_names();
@@ -415,24 +445,15 @@ pub fn make_plan(report: &Report, opts: &PlanOptions) -> Plan {
             let label = format!("{} {}", a.agent, a.what);
             let adapter = report.adapters.iter().find(|x| x.id == a.adapter);
             let running = adapter.is_some_and(|ad| agent_running(ad, &procs));
-            let idle = a.totals.idle_days(now).unwrap_or(0);
-            let reason = if running {
-                Err(format!("{} is running", a.agent))
-            } else if idle < opts.worktree_days {
-                Err(format!(
-                    "changed {} — needs {}+ days idle",
-                    util::age(Some(idle)),
-                    opts.worktree_days
-                ))
-            } else if a.totals.reclaimable_bytes == 0 {
-                Err("nothing to free".to_string())
-            } else {
-                Ok(format!(
-                    "regenerable {}, idle {}",
-                    a.what,
-                    util::age(Some(idle))
-                ))
-            };
+            let reason = agent_cache_eligibility(
+                &a.totals,
+                now,
+                opts.worktree_days,
+                &a.agent,
+                running,
+                None,
+            )
+            .map(|idle| format!("regenerable {}, idle {}", a.what, util::age(Some(idle))));
             match reason {
                 Ok(reason) => items.push(PlanItem {
                     kind: ItemKind::AgentCache,
@@ -477,6 +498,7 @@ pub fn make_plan(report: &Report, opts: &PlanOptions) -> Plan {
         items,
         skipped,
         hints,
+        warnings: report.warnings.clone(),
     }
 }
 
@@ -544,6 +566,14 @@ pub fn plan_to_json(p: &Plan) -> Value {
                 .collect::<Vec<_>>()
                 .into(),
         ),
+        (
+            "warnings",
+            p.warnings
+                .iter()
+                .map(|w| Value::from(w.as_str()))
+                .collect::<Vec<_>>()
+                .into(),
+        ),
     ])
 }
 
@@ -569,6 +599,14 @@ fn plan_from_json(v: &Value) -> Result<Plan, String> {
         items,
         skipped: Vec::new(),
         hints: Vec::new(),
+        warnings: v
+            .get("warnings")
+            .and_then(Value::as_arr)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
     })
 }
 
@@ -745,7 +783,11 @@ pub fn render_plan(p: &Plan, path: Option<&Path>) -> String {
     let mut out = format!("agentdisk plan {}\n", p.id);
     out.push_str("This is only a plan. Nothing was moved or deleted.\n\n");
     if p.items.is_empty() {
-        out.push_str("Nothing is safe to clean right now.\n");
+        out.push_str(if p.warnings.is_empty() {
+            "Nothing is safe to clean right now.\n"
+        } else {
+            "Nothing to clean, but the scan had warnings.\n"
+        });
     } else {
         out.push_str(&format!(
             "WOULD MOVE TO QUARANTINE ({} items, {})\n",
@@ -792,6 +834,12 @@ pub fn render_plan(p: &Plan, path: Option<&Path>) -> String {
         ));
         if p.skipped.len() > 30 {
             out.push_str(&format!("  … and {} more\n", p.skipped.len() - 30));
+        }
+    }
+    if !p.warnings.is_empty() {
+        out.push_str("\nWARNINGS\n");
+        for warning in &p.warnings {
+            out.push_str(&format!("  - {warning}\n"));
         }
     }
     if !p.hints.is_empty() {
@@ -1140,8 +1188,9 @@ pub fn restore(plan_id: &str) -> (Vec<JournalEntry>, Vec<String>) {
     (done, problems)
 }
 
-/// (entries `purge` may delete with their plan id, entries left out and why).
-pub type PurgeList = (Vec<(String, JournalEntry)>, Vec<String>);
+/// (entries `purge` may delete with their plan id, entries left out and why,
+/// total number of quarantined entries before filtering by age).
+pub type PurgeList = (Vec<(String, JournalEntry)>, Vec<String>, usize);
 
 /// Quarantined entries older than `min_days` (all plans, or one). Entries
 /// whose quarantine path is not inside their plan's quarantine are left out
@@ -1158,9 +1207,14 @@ pub fn purge_candidates(plan: Option<&str>, min_days: u64) -> Result<PurgeList, 
     };
     let mut out = Vec::new();
     let mut refused = Vec::new();
+    let mut quarantined = 0;
     for id in ids {
-        for e in read_journal(&id) {
-            if e.state == "quarantined" && now.saturating_sub(e.moved_at) >= min_age_secs {
+        for e in read_journal(&id)
+            .into_iter()
+            .filter(|e| e.state == "quarantined")
+        {
+            quarantined += 1;
+            if now.saturating_sub(e.moved_at) >= min_age_secs {
                 match check_in_quarantine(&id, &e) {
                     Ok(()) => out.push((id.clone(), e)),
                     Err(why) => refused.push(why),
@@ -1168,7 +1222,7 @@ pub fn purge_candidates(plan: Option<&str>, min_days: u64) -> Result<PurgeList, 
             }
         }
     }
-    Ok((out, refused))
+    Ok((out, refused, quarantined))
 }
 
 /// Permanently delete quarantined entries. Returns (freed bytes, problems).
@@ -1486,7 +1540,44 @@ class = "regenerable"
             items: vec![],
             skipped: vec![],
             hints: vec![],
+            warnings: vec![],
         };
         assert_eq!(p.code(), "a1b2c3");
+    }
+
+    #[test]
+    fn plan_warnings_survive_json_round_trip_and_old_plans_load() {
+        let report = Report {
+            warnings: vec!["fixture scan warning".into()],
+            ..Report::default()
+        };
+        let plan = make_plan(&report, &PlanOptions::default());
+        let value = plan_to_json(&plan);
+        let loaded = plan_from_json(&value).unwrap();
+        assert_eq!(loaded.warnings, report.warnings);
+        assert!(render_plan(&loaded, None).contains("WARNINGS\n  - fixture scan warning\n"));
+        let Value::Obj(mut fields) = value else {
+            panic!("plan must be an object")
+        };
+        fields.retain(|(name, _)| name != "warnings");
+        assert!(plan_from_json(&Value::Obj(fields))
+            .unwrap()
+            .warnings
+            .is_empty());
+    }
+
+    #[test]
+    fn nonempty_plan_output_keeps_its_body_when_warnings_are_added() {
+        let mut plan = make_plan(&Report::default(), &PlanOptions::default());
+        plan.items.push(cache_item(Path::new("fixture/cache")));
+        let plain = render_plan(&plan, None);
+        assert!(plain.contains("WOULD MOVE TO QUARANTINE (1 items, 1 B)"));
+        assert!(!plain.contains("WARNINGS"));
+        plan.warnings.push("fixture scan warning".into());
+        let with_warnings = render_plan(&plan, None);
+        assert_eq!(
+            with_warnings.replace("\nWARNINGS\n  - fixture scan warning\n", ""),
+            plain
+        );
     }
 }

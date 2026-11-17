@@ -1,12 +1,14 @@
 <p align="center"><a href="https://laaielichter.github.io/Agentdisk/"><img src="docs/assets/social.jpg" alt="agentdisk — Clear the clutter. Keep the work." width="1000"></a></p>
 <p align="center"><img src="docs/logo.svg" width="60" height="60" alt="agentdisk drive icon"></p>
 <h1 align="center">agentdisk</h1>
+<p align="center">English | <a href="docs/README.es.md">Español</a></p>
 <p align="center"><a href="https://laaielichter.github.io/Agentdisk/">Website</a> · <a href="https://laaielichter.github.io/Agentdisk/#install">Get agentdisk</a> · <a href="docs/clients.md">Connect your agent</a></p>
 <p align="center"><b>The honest disk report for AI coding agents: what Claude Code, Cursor, Codex and friends left on your disk, and a cleanup you can undo.</b></p>
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue"></a>
   <img alt="Platforms: Windows, macOS, Linux" src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-informational">
   <img alt="MCP server" src="https://img.shields.io/badge/MCP-server-8A2BE2">
+  <a href="https://github.com/laaielichter/Agentdisk/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/laaielichter/Agentdisk?style=social"></a>
 </p>
 <p align="center">
   <img src="docs/demo.gif" alt="agentdisk scanning agent worktrees and build folders, making a cleanup plan, and explaining why a worktree with a .env file is kept" width="900">
@@ -77,14 +79,16 @@ On Windows you can run `.\scripts\install.ps1` instead. Check it works: `agentdi
 | `mcp` | MCP server on stdio | No |
 
 Every read command has `--json`. Save your projects folder once with `agentdisk config --init`.
+The fast `check` also uses configured adapter folders and the `min_free_gb` and
+`max_worktrees` warning limits (both default to 20). Its CLI flags override those limits.
 
 ## What is safe to clean
 
 | Kind | Planned when… | Never when… |
 |---|---|---|
 | Agent worktrees | clean, idle 7+ days, unlocked, commits on a branch | uncommitted or untracked files, ignored files that are not build output (like `.env`), locked, main worktree |
-| Build folders (`node_modules`, `.venv`, `target`, `.godot`, Unity `Library`, Unreal `Intermediate`, …) | marker file present, git-ignored, idle 14+ days | tracked by git, its editor is running (Godot, Unity, Unreal), all files shared via hardlinks |
-| Agent logs and caches | marked regenerable, agent not running | — |
+| Build folders ([full list and markers](docs/build-folders.md)) | marker file present, git-ignored, idle for `build_days` (14 days by default) | tracked by git, its editor is running (Godot, Unity, Unreal), all files shared via hardlinks |
+| Agent logs and caches | marked regenerable, idle for `worktree_days` (7 days by default), agent not running | — |
 | Transcripts, checkpoints, memories, settings, models, SDK downloads | — | **always reported, never planned** |
 
 Branches are always kept. Quarantine sits on the same drive, so `apply` is instant.
@@ -167,6 +171,12 @@ then `/plugin install reverseport@reverseport`, `stashpad@reverseport` or `agent
 
 Adapters for more agents are the most welcome help. See [CONTRIBUTING.md](CONTRIBUTING.md) and
 [docs/adapters.md](docs/adapters.md). Changes per version: [CHANGELOG.md](CHANGELOG.md).
+
+## Support the project
+
+If agentdisk is useful to you, a ⭐ on [GitHub](https://github.com/laaielichter/Agentdisk) helps other people find it.
+
+Thanks to everyone who has contributed: [@ViktorBystrov72](https://github.com/ViktorBystrov72), [@ariktadas144](https://github.com/ariktadas144) and [@dannyward630](https://github.com/dannyward630).
 
 ## License
 
