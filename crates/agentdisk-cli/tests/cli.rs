@@ -202,6 +202,49 @@ fn size_command() {
 }
 
 #[test]
+fn scan_recognizes_only_dart_tool_folders_with_pubspec() {
+    let h = tmp("dart-tool");
+    let projects = h.join("projects");
+    let dart = projects.join("dart");
+    let generated = dart.join(".dart_tool");
+    fs::create_dir_all(&generated).unwrap();
+    fs::write(generated.join("package_config.json"), "{}").unwrap();
+    fs::write(dart.join("pubspec.yaml"), "name: fixture\n").unwrap();
+    let unmarked = projects.join("notes/.dart_tool");
+    fs::create_dir_all(&unmarked).unwrap();
+    let (code, out, err) = run(
+        &h,
+        &[
+            "scan",
+            "-p",
+            projects.to_str().unwrap(),
+            "--no-agents",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    let report = agentdisk_core::json::parse(&out).unwrap();
+    let builds = report.get("build_folders").unwrap().as_arr().unwrap();
+    assert_eq!(builds.len(), 1, "{out}");
+    assert_eq!(builds[0].get("ecosystem").unwrap().as_str(), Some("dart"));
+    assert_eq!(
+        builds[0].get("path").unwrap().as_str(),
+        Some(agentdisk_core::paths::display(&agentdisk_core::paths::canon(&generated)).as_str())
+    );
+    let (code, out, err) = run(&h, &["explain", generated.to_str().unwrap(), "--json"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let explained = agentdisk_core::json::parse(&out).unwrap();
+    assert_eq!(explained.get("owner").unwrap().as_str(), Some("dart"));
+    assert!(generated.join("package_config.json").is_file());
+    assert!(unmarked.is_dir());
+    assert!(
+        !h.join("agentdisk").exists(),
+        "scan and explain must not write"
+    );
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
 fn scan_warns_when_a_project_path_is_a_file() {
     let h = tmp("project-file");
     let project = h.join("app");

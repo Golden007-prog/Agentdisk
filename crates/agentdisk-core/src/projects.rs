@@ -92,6 +92,13 @@ pub const RULES: &[EcoRule] = &[
         rebuild: "cargo build",
     },
     EcoRule {
+        dir: ".dart_tool",
+        ecosystem: "dart",
+        markers: &["pubspec.yaml"],
+        editor: None,
+        rebuild: "dart pub get / flutter pub get",
+    },
+    EcoRule {
         dir: ".godot",
         ecosystem: "godot",
         markers: &["project.godot"],
@@ -344,6 +351,11 @@ mod tests {
         fs::create_dir_all(unity.join("Library")).unwrap();
         fs::create_dir_all(unity.join("ProjectSettings")).unwrap();
         fs::write(unity.join("ProjectSettings/ProjectVersion.txt"), "").unwrap();
+        let dart = root.join("dart");
+        fs::create_dir_all(dart.join(".dart_tool/cache")).unwrap();
+        fs::write(dart.join("pubspec.yaml"), "name: fixture\n").unwrap();
+        let unmarked_dart = root.join("notes/.dart_tool");
+        fs::create_dir_all(&unmarked_dart).unwrap();
         fs::create_dir_all(root.join("repo/.git")).unwrap();
         fs::create_dir_all(root.join("wt")).unwrap();
         fs::write(root.join("wt/.git"), "gitdir: /x").unwrap();
@@ -354,6 +366,21 @@ mod tests {
         assert!(kinds.contains(&".godot"));
         assert!(kinds.contains(&"Intermediate"));
         assert!(kinds.contains(&"Library"));
+        let dart_paths: Vec<_> = scan
+            .eco
+            .iter()
+            .filter(|e| e.rule.dir == ".dart_tool")
+            .map(|e| &e.path)
+            .collect();
+        assert_eq!(
+            dart_paths,
+            vec![&crate::paths::canon(&dart.join(".dart_tool"))]
+        );
+        let dart_rule = rule_for(&dart.join(".dart_tool")).unwrap();
+        assert_eq!(dart_rule.ecosystem, "dart");
+        assert_eq!(dart_rule.rebuild, "dart pub get / flutter pub get");
+        assert_eq!(dart_rule.editor, None);
+        assert!(rule_for(&unmarked_dart).is_none());
         assert!(
             !kinds.contains(&"target"),
             "target without Cargo.toml must be ignored"
