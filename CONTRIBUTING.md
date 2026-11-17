@@ -1,6 +1,8 @@
 # Contributing
 
-Thanks for helping. The most useful contributions:
+Thanks for helping. Starring the repo is a simple way to keep it in your list and helps others find it, but it is never needed to get an issue, help or a review.
+
+The most useful contributions:
 
 1. **Adapters for more agents** — see [docs/adapters.md](docs/adapters.md). Include where you verified the paths (OS, agent version).
 2. **Fixes to existing adapter paths** — agents move their data often.
