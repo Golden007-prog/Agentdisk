@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime};
 
 fn tmp(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -39,6 +40,38 @@ fn run(home: &PathBuf, args: &[&str]) -> (i32, String, String) {
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+fn files_under(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if entry.file_type().unwrap().is_dir() {
+            files.extend(files_under(&path));
+        } else {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
+}
+
+fn set_mtime(path: &Path, modified: SystemTime) {
+    let times = fs::FileTimes::new().set_modified(modified);
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Open directories with write-attributes access so their timestamp can be set too.
+        fs::OpenOptions::new()
+            .access_mode(0x100) // FILE_WRITE_ATTRIBUTES
+            .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS
+            .open(path)
+            .unwrap()
+    };
+    #[cfg(not(windows))]
+    let file = fs::File::open(path).unwrap();
+    file.set_times(times).unwrap();
 }
 
 fn read_one_line_then_close(mut command: Command) {
@@ -140,6 +173,121 @@ fn version_and_help() {
     let (code, _, err) = run(&h, &["--delete-everything"]);
     assert_eq!(code, 2);
     assert!(err.contains("unknown command"));
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn advise_runs_through_the_cli_in_text_and_json() {
+    let h = tmp("advise-cli");
+    let (code, out, err) = run(&h, &["advise", "--no-agents"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(
+        out.starts_with("agentdisk advise — ways to need less space"),
+        "{out}"
+    );
+    assert!(err.is_empty(), "{err}");
+
+    let (code, out, err) = run(&h, &["advise", "--no-agents", "--json"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(agentdisk_core::json::parse(&out).is_ok(), "{out}");
+    assert!(err.is_empty(), "{err}");
+    assert!(
+        !h.join("agentdisk").exists(),
+        "advise must not write config"
+    );
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn compact_cli_refusals_and_dry_run_preserve_files() {
+    let h = tmp("compact-cli");
+    let (code, out, err) = run(&h, &["compact"]);
+    assert_eq!(code, 2, "{out}{err}");
+    assert!(out.starts_with("agentdisk compact"), "{out}");
+
+    let workspace = h.join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(workspace.join("keep.txt"), b"keep").unwrap();
+    let before = files_under(&workspace);
+    let (code, out, err) = run(
+        &h,
+        &["compact", workspace.to_str().unwrap(), "--algo", "bogus"],
+    );
+    assert_eq!(code, 2, "{out}{err}");
+    assert!(err.contains("unknown --algo 'bogus'"), "{err}");
+    assert_eq!(files_under(&workspace), before);
+
+    let file = h.join("some-file.txt");
+    fs::write(&file, b"unchanged").unwrap();
+    let contents = fs::read(&file).unwrap();
+    let (code, out, err) = run(&h, &["compact", file.to_str().unwrap()]);
+    assert_eq!(code, 2, "{out}{err}");
+    assert!(err.contains("give a folder"), "{err}");
+    assert_eq!(fs::read(&file).unwrap(), contents);
+
+    let fresh = h.join("fresh");
+    fs::create_dir_all(&fresh).unwrap();
+    fs::write(fresh.join("keep.txt"), b"fresh").unwrap();
+    let before = files_under(&fresh);
+    let (code, out, err) = run(&h, &["compact", fresh.to_str().unwrap(), "--dry-run"]);
+    assert_eq!(code, 2, "{out}{err}");
+    assert!(err.contains("changed") && err.contains("7+ days"), "{err}");
+    assert_eq!(files_under(&fresh), before);
+
+    let old = h.join("old");
+    fs::create_dir_all(&old).unwrap();
+    let old_file = old.join("keep.txt");
+    fs::write(&old_file, b"old").unwrap();
+    let previous = SystemTime::now()
+        - Duration::from_secs((agentdisk_core::compact::MIN_IDLE_DAYS + 2) * 86_400);
+    set_mtime(&old_file, previous);
+    set_mtime(&old, previous);
+    let before = files_under(&old);
+    let contents = fs::read(&old_file).unwrap();
+    let (code, out, err) = run(&h, &["compact", old.to_str().unwrap(), "--dry-run"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("Command:"), "{out}");
+    assert_eq!(files_under(&old), before);
+    assert_eq!(fs::read(&old_file).unwrap(), contents);
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn config_init_writes_once_and_then_reads_cleanly() {
+    let h = tmp("config-init-cli");
+    let path = h.join("agentdisk/config.toml");
+    let (code, out, err) = run(&h, &["config", "--init"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(path.is_file(), "{out}{err}");
+    let original = fs::read(&path).unwrap();
+
+    let (code, out, err) = run(&h, &["config"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(err.is_empty(), "{err}");
+    assert!(out.contains("worktree_days ="), "{out}");
+
+    let (code, out, err) = run(&h, &["config", "--init"]);
+    assert_eq!(code, 2, "{out}{err}");
+    assert!(err.contains("already exists"), "{err}");
+    assert_eq!(fs::read(&path).unwrap(), original);
+    fs::remove_dir_all(&h).unwrap();
+}
+
+#[test]
+fn quarantine_cli_lists_empty_and_populated_quarantine() {
+    let h = tmp("quarantine-cli");
+    let (code, out, err) = run(&h, &["quarantine"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(out, "Quarantine is empty.\n");
+
+    let id = "20990101-abcdef";
+    let plan = h.join("agentdisk/quarantine").join(id);
+    let original = h.join("app/node_modules");
+    let quarantined = plan.join("000-node_modules");
+    write_journal(&plan, &[(&original, &quarantined)]);
+    let (code, out, err) = run(&h, &["quarantine"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("QUARANTINE") && out.contains(id), "{out}");
     fs::remove_dir_all(&h).unwrap();
 }
 
