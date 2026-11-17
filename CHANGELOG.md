@@ -18,6 +18,7 @@
 - `check` uses the adapter folders, `min_free_gb` and `max_worktrees` from `config.toml`, so a configured setting is no longer ignored by the fast CLI and MCP checks. An explicit flag still wins, and both limits still default to 20. Thanks to @ViktorBystrov72! (#12, #70)
 - The scan report's summary totals, its JSON summary fields and the 40-row build-folder limit are now covered by tests. Thanks to @dannyward630! (#8, #72)
 - Every build-folder rule and marker is documented in one reference, and a test keeps that page in step with the code. Thanks to @dannyward630! (#6, #74)
+- Test coverage for `advise`, `compact`, `config --init` and `quarantine` through the binary: the text and JSON output, refusals, dry runs and empty or populated quarantines are checked. Test-only. Thanks to @dannyward630! (#47, #76)
 
 ## 0.3.1
 
