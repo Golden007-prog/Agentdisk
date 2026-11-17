@@ -85,6 +85,7 @@ pub struct Plan {
     pub items: Vec<PlanItem>,
     pub skipped: Vec<Skipped>,
     pub hints: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 impl Plan {
@@ -477,6 +478,7 @@ pub fn make_plan(report: &Report, opts: &PlanOptions) -> Plan {
         items,
         skipped,
         hints,
+        warnings: report.warnings.clone(),
     }
 }
 
@@ -544,6 +546,14 @@ pub fn plan_to_json(p: &Plan) -> Value {
                 .collect::<Vec<_>>()
                 .into(),
         ),
+        (
+            "warnings",
+            p.warnings
+                .iter()
+                .map(|w| Value::from(w.as_str()))
+                .collect::<Vec<_>>()
+                .into(),
+        ),
     ])
 }
 
@@ -569,6 +579,14 @@ fn plan_from_json(v: &Value) -> Result<Plan, String> {
         items,
         skipped: Vec::new(),
         hints: Vec::new(),
+        warnings: v
+            .get("warnings")
+            .and_then(Value::as_arr)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
     })
 }
 
@@ -745,7 +763,11 @@ pub fn render_plan(p: &Plan, path: Option<&Path>) -> String {
     let mut out = format!("agentdisk plan {}\n", p.id);
     out.push_str("This is only a plan. Nothing was moved or deleted.\n\n");
     if p.items.is_empty() {
-        out.push_str("Nothing is safe to clean right now.\n");
+        out.push_str(if p.warnings.is_empty() {
+            "Nothing is safe to clean right now.\n"
+        } else {
+            "Nothing to clean, but the scan had warnings.\n"
+        });
     } else {
         out.push_str(&format!(
             "WOULD MOVE TO QUARANTINE ({} items, {})\n",
@@ -792,6 +814,12 @@ pub fn render_plan(p: &Plan, path: Option<&Path>) -> String {
         ));
         if p.skipped.len() > 30 {
             out.push_str(&format!("  … and {} more\n", p.skipped.len() - 30));
+        }
+    }
+    if !p.warnings.is_empty() {
+        out.push_str("\nWARNINGS\n");
+        for warning in &p.warnings {
+            out.push_str(&format!("  - {warning}\n"));
         }
     }
     if !p.hints.is_empty() {
@@ -1492,7 +1520,44 @@ class = "regenerable"
             items: vec![],
             skipped: vec![],
             hints: vec![],
+            warnings: vec![],
         };
         assert_eq!(p.code(), "a1b2c3");
+    }
+
+    #[test]
+    fn plan_warnings_survive_json_round_trip_and_old_plans_load() {
+        let report = Report {
+            warnings: vec!["fixture scan warning".into()],
+            ..Report::default()
+        };
+        let plan = make_plan(&report, &PlanOptions::default());
+        let value = plan_to_json(&plan);
+        let loaded = plan_from_json(&value).unwrap();
+        assert_eq!(loaded.warnings, report.warnings);
+        assert!(render_plan(&loaded, None).contains("WARNINGS\n  - fixture scan warning\n"));
+        let Value::Obj(mut fields) = value else {
+            panic!("plan must be an object")
+        };
+        fields.retain(|(name, _)| name != "warnings");
+        assert!(plan_from_json(&Value::Obj(fields))
+            .unwrap()
+            .warnings
+            .is_empty());
+    }
+
+    #[test]
+    fn nonempty_plan_output_keeps_its_body_when_warnings_are_added() {
+        let mut plan = make_plan(&Report::default(), &PlanOptions::default());
+        plan.items.push(cache_item(Path::new("fixture/cache")));
+        let plain = render_plan(&plan, None);
+        assert!(plain.contains("WOULD MOVE TO QUARANTINE (1 items, 1 B)"));
+        assert!(!plain.contains("WARNINGS"));
+        plan.warnings.push("fixture scan warning".into());
+        let with_warnings = render_plan(&plan, None);
+        assert_eq!(
+            with_warnings.replace("\nWARNINGS\n  - fixture scan warning\n", ""),
+            plain
+        );
     }
 }
