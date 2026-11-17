@@ -12,6 +12,9 @@
 - A closed output pipe, such as `agentdisk adapters | head -1`, now stops quietly with exit status 0 instead of panicking. Other write errors are still reported as `error: ...` with exit 2. Thanks to @ViktorBystrov72! (#48, #61)
 - `scan`, `plan` and the other scanning commands now warn `project path is not a folder: <path>` when a `-p` / `projects` entry is a file instead of a folder; before, it gave no warning at all. Missing folders still give `project folder not found`. Thanks to @ViktorBystrov72! (#42, #62)
 - `scan`, `advise`, `plan`, `purge`, `check`, `plans`, `adapters` and `config` refuse a loose argument they do not take with exit 2, before anything is scanned or written: `scan demo` used to scan no projects, `plan demo` saved an empty plan and `purge <id>` listed every plan. `scan`, `advise` and `plan` suggest `-p <folder>`, `purge` suggests `--plan <id>`. Thanks to @ViktorBystrov72! (#43, #63)
+- `plan` keeps the scan's warnings: a missing or unreadable project folder no longer turns into an apparently clean empty plan. The text says "Nothing to clean, but the scan had warnings." and lists them, and JSON plans have a `warnings` array (`schema_version` stays 1; older saved plans still load). Thanks to @ViktorBystrov72! (#27, #64)
+- `config.toml` warns instead of silently using the default when a known setting has a wrong value (`worktree_days = -3`, `build_days = "soon"`, `projects = 5`), when a folder list has entries that are not text, and when settings sit under a `[section]` header. A single string for `projects` or `adapters` is still read as one folder. Thanks to @ViktorBystrov72! (#29, #65)
+- Dart and Flutter `.dart_tool` folders next to `pubspec.yaml` are recognized as build folders of ecosystem `dart` (rebuild: `dart pub get / flutter pub get`) and planned under the usual rules. Thanks to @ViktorBystrov72! (#28, #69)
 
 ## 0.3.1
 
