@@ -1,6 +1,7 @@
 <p align="center"><a href="https://laaielichter.github.io/Agentdisk/"><img src="docs/assets/social.jpg" alt="agentdisk — Clear the clutter. Keep the work." width="1000"></a></p>
 <p align="center"><img src="docs/logo.svg" width="60" height="60" alt="agentdisk drive icon"></p>
 <h1 align="center">agentdisk</h1>
+<p align="center">English | <a href="docs/README.es.md">Español</a></p>
 <p align="center"><a href="https://laaielichter.github.io/Agentdisk/">Website</a> · <a href="https://laaielichter.github.io/Agentdisk/#install">Get agentdisk</a> · <a href="docs/clients.md">Connect your agent</a></p>
 <p align="center"><b>The honest disk report for AI coding agents: what Claude Code, Cursor, Codex and friends left on your disk, and a cleanup you can undo.</b></p>
 <p align="center">
