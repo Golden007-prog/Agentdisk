@@ -7,6 +7,7 @@
   <a href="LICENSE"><img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue"></a>
   <img alt="Platforms: Windows, macOS, Linux" src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-informational">
   <img alt="MCP server" src="https://img.shields.io/badge/MCP-server-8A2BE2">
+  <a href="https://github.com/laaielichter/Agentdisk/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/laaielichter/Agentdisk?style=social"></a>
 </p>
 <p align="center">
   <img src="docs/demo.gif" alt="agentdisk scanning agent worktrees and build folders, making a cleanup plan, and explaining why a worktree with a .env file is kept" width="900">
@@ -167,6 +168,12 @@ then `/plugin install reverseport@reverseport`, `stashpad@reverseport` or `agent
 
 Adapters for more agents are the most welcome help. See [CONTRIBUTING.md](CONTRIBUTING.md) and
 [docs/adapters.md](docs/adapters.md). Changes per version: [CHANGELOG.md](CHANGELOG.md).
+
+## Support the project
+
+If agentdisk is useful to you, a ⭐ on [GitHub](https://github.com/laaielichter/Agentdisk) helps other people find it.
+
+Thanks to everyone who has contributed: [@ViktorBystrov72](https://github.com/ViktorBystrov72), [@ariktadas144](https://github.com/ariktadas144) and [@dannyward630](https://github.com/dannyward630).
 
 ## License
 
