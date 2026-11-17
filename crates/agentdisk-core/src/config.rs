@@ -55,10 +55,23 @@ fn parse_config(text: &str) -> Config {
                 match k.as_str() {
                     "projects" | "adapters" => {
                         let folders: Option<Vec<PathBuf>> = match v {
-                            TVal::Arr(values) => values
-                                .iter()
-                                .map(|v| v.as_str().map(PathBuf::from))
-                                .collect(),
+                            TVal::Str(folder) => Some(vec![PathBuf::from(folder)]),
+                            TVal::Arr(values) => {
+                                let folders: Vec<PathBuf> = values
+                                    .iter()
+                                    .filter_map(|v| v.as_str().map(PathBuf::from))
+                                    .collect();
+                                let ignored = values.len() - folders.len();
+                                if ignored > 0 {
+                                    let entries = if ignored == 1 {
+                                        "entry that is"
+                                    } else {
+                                        "entries that are"
+                                    };
+                                    c.warnings.push(format!("config.toml: {k} must be a list of folders, like [\"path/to/folder\"]; ignored {ignored} {entries} not text"));
+                                }
+                                Some(folders)
+                            }
                             _ => None,
                         };
                         match folders {
@@ -186,7 +199,7 @@ max_depth = 9
     #[test]
     fn invalid_config_folder_lists_warn_and_keep_defaults() {
         for key in ["projects", "adapters"] {
-            for value in ["\"workspace\"", "1", "true", "[\"valid\", 5]"] {
+            for value in ["1", "true"] {
                 let cfg = parse_config(&format!("{key} = {value}"));
                 assert_eq!(cfg.warnings.len(), 1, "{key} = {value}: {:?}", cfg.warnings);
                 assert!(
@@ -196,6 +209,53 @@ max_depth = 9
                     cfg.warnings
                 );
                 assert!(cfg.projects.is_empty() && cfg.adapters.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn config_folder_strings_remain_supported() {
+        for key in ["projects", "adapters"] {
+            let cfg = parse_config(&format!("{key} = \"workspace\""));
+            assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
+            let folders = if key == "projects" {
+                cfg.projects
+            } else {
+                cfg.adapters
+            };
+            assert_eq!(folders, vec![PathBuf::from("workspace")]);
+        }
+    }
+
+    #[test]
+    fn config_mixed_folder_lists_keep_text_entries_and_warn() {
+        for key in ["projects", "adapters"] {
+            for (value, paths, ignored) in [
+                (r#"["first", 5, "second"]"#, vec!["first", "second"], 1),
+                (
+                    r#"["first", true, [], "second"]"#,
+                    vec!["first", "second"],
+                    2,
+                ),
+                ("[1, true]", vec![], 2),
+            ] {
+                let cfg = parse_config(&format!("{key} = {value}"));
+                let folders = if key == "projects" {
+                    cfg.projects
+                } else {
+                    cfg.adapters
+                };
+                assert_eq!(
+                    folders,
+                    paths.into_iter().map(PathBuf::from).collect::<Vec<_>>()
+                );
+                assert_eq!(cfg.warnings.len(), 1);
+                assert!(cfg.warnings[0].contains(key), "{:?}", cfg.warnings);
+                assert!(
+                    cfg.warnings[0].contains(&format!("ignored {ignored} ")),
+                    "{:?}",
+                    cfg.warnings
+                );
             }
         }
     }
