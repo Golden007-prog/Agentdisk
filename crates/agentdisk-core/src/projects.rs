@@ -391,4 +391,26 @@ mod tests {
         assert!(rule_for(&root.join("notes/target")).is_none());
         fs::remove_dir_all(&root).unwrap();
     }
+
+    #[test]
+    fn build_folder_docs_cover_every_rule_and_marker() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/build-folders.md");
+        let docs = fs::read_to_string(path).expect("build-folder documentation");
+
+        for rule in RULES {
+            let row_prefix = format!("| `{}` |", rule.dir);
+            let row = docs
+                .lines()
+                .find(|line| line.starts_with(&row_prefix))
+                .unwrap_or_else(|| panic!("docs/build-folders.md is missing `{}`", rule.dir));
+
+            for marker in rule.markers {
+                assert!(
+                    row.contains(&format!("`{marker}`")),
+                    "docs/build-folders.md is missing marker `{marker}` for `{}`",
+                    rule.dir
+                );
+            }
+        }
+    }
 }
