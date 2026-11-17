@@ -74,6 +74,7 @@ pub fn explain(path: &Path) -> Result<Explanation, String> {
 
     // 1. Agent and tool data (most specific match wins).
     let (adapters, _) = scan::load_adapters(&cfg.adapters);
+    let mut outer: Option<(usize, PathBuf)> = None;
     let mut best: Option<(
         usize,
         &crate::adapters::Adapter,
@@ -88,6 +89,11 @@ pub fn explain(path: &Path) -> Result<Explanation, String> {
         {
             for root in paths::expand(&e.template) {
                 let rk = key(&root);
+                if k.starts_with(&format!("{rk}/"))
+                    && outer.as_ref().is_none_or(|(len, _)| rk.len() > *len)
+                {
+                    outer = Some((rk.len(), canon(&root)));
+                }
                 if inside(&k, &rk) && best.as_ref().is_none_or(|b| rk.len() > b.0) {
                     best = Some((rk.len(), a, e, root));
                 }
@@ -137,20 +143,22 @@ pub fn explain(path: &Path) -> Result<Explanation, String> {
                 display(root)
             )),
             Class::Regenerable => {
-                let idle = totals.idle_days(now).unwrap_or(0);
-                if a.processes
+                let running = a
+                    .processes
                     .iter()
-                    .any(|n| cleanup::process_matches(&procs, n))
-                {
-                    Verdict::Keep(format!("{} is running", a.name))
-                } else if idle < cfg.worktree_days {
-                    Verdict::Keep(format!(
-                        "changed {} — needs {}+ days idle",
-                        util::age(Some(idle)),
-                        cfg.worktree_days
-                    ))
-                } else {
-                    Verdict::Cleanable(format!("regenerable, idle {}", util::age(Some(idle))))
+                    .any(|n| cleanup::process_matches(&procs, n));
+                match cleanup::agent_cache_eligibility(
+                    &totals,
+                    now,
+                    cfg.worktree_days,
+                    &a.name,
+                    running,
+                    outer.as_ref().map(|(_, path)| path.as_path()),
+                ) {
+                    Ok(idle) => {
+                        Verdict::Cleanable(format!("regenerable, idle {}", util::age(Some(idle))))
+                    }
+                    Err(reason) => Verdict::Keep(reason),
                 }
             }
         };

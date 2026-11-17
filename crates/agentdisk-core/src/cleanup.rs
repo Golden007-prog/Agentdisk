@@ -25,7 +25,7 @@ use crate::json::{self, Value};
 use crate::paths::{self, display};
 use crate::projects;
 use crate::scan::{self, Report, ScanOptions, WorktreeItem};
-use crate::size::{self, human};
+use crate::size::{self, human, Totals};
 use crate::sys;
 use crate::util::{self, table};
 use std::collections::HashSet;
@@ -323,6 +323,35 @@ fn check_agent_cache(
     Ok(())
 }
 
+/// Shared cache eligibility for planning and explanations. Returns idle days.
+pub(crate) fn agent_cache_eligibility(
+    totals: &Totals,
+    now: u64,
+    min_days: u64,
+    agent_name: &str,
+    running: bool,
+    outer: Option<&Path>,
+) -> Result<u64, String> {
+    if let Some(outer) = outer {
+        return Err(format!("inside another agent folder: {}", display(outer)));
+    }
+    if running {
+        return Err(format!("{agent_name} is running"));
+    }
+    let idle = totals.idle_days(now).unwrap_or(0);
+    if idle < min_days {
+        return Err(format!(
+            "changed {} — needs {}+ days idle",
+            util::age(Some(idle)),
+            min_days
+        ));
+    }
+    if totals.reclaimable_bytes == 0 {
+        return Err("nothing to free".into());
+    }
+    Ok(idle)
+}
+
 pub fn make_plan(report: &Report, opts: &PlanOptions) -> Plan {
     let now = report.generated;
     let procs = sys::process_names();
@@ -416,24 +445,15 @@ pub fn make_plan(report: &Report, opts: &PlanOptions) -> Plan {
             let label = format!("{} {}", a.agent, a.what);
             let adapter = report.adapters.iter().find(|x| x.id == a.adapter);
             let running = adapter.is_some_and(|ad| agent_running(ad, &procs));
-            let idle = a.totals.idle_days(now).unwrap_or(0);
-            let reason = if running {
-                Err(format!("{} is running", a.agent))
-            } else if idle < opts.worktree_days {
-                Err(format!(
-                    "changed {} — needs {}+ days idle",
-                    util::age(Some(idle)),
-                    opts.worktree_days
-                ))
-            } else if a.totals.reclaimable_bytes == 0 {
-                Err("nothing to free".to_string())
-            } else {
-                Ok(format!(
-                    "regenerable {}, idle {}",
-                    a.what,
-                    util::age(Some(idle))
-                ))
-            };
+            let reason = agent_cache_eligibility(
+                &a.totals,
+                now,
+                opts.worktree_days,
+                &a.agent,
+                running,
+                None,
+            )
+            .map(|idle| format!("regenerable {}, idle {}", a.what, util::age(Some(idle))));
             match reason {
                 Ok(reason) => items.push(PlanItem {
                     kind: ItemKind::AgentCache,
